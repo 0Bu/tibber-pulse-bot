@@ -59,18 +59,22 @@ func BuildConfig(name string, spec SensorSpec, dev Device, stateTopic string) Co
 	uniqueID := fmt.Sprintf("tibber_pulse_%s_%s", sanitize(dev.MeterSerial), name)
 	cfg := Config{
 		"name":                spec.FriendlyName,
+		"has_entity_name":     true,
 		"unique_id":           uniqueID,
 		"object_id":           uniqueID,
 		"state_topic":         stateTopic,
 		"unit_of_measurement": spec.Unit,
 		"device_class":        spec.DeviceClass,
 		"state_class":         spec.StateClass,
+		// device block must be self-contained — do NOT set via_device
+		// unless we actually publish a parent device with that identifier;
+		// HA renders an unresolved via_device as "Connected via Unnamed
+		// device" on the entity card.
 		"device": map[string]any{
 			"identifiers":  []string{dev.MeterSerial},
 			"name":         "Tibber Pulse " + dev.MeterSerial,
 			"manufacturer": manufacturerName(dev.Manufacturer),
 			"model":        "SML 1.04 meter",
-			"via_device":   "tibber-pulse-bot",
 		},
 	}
 	return cfg
