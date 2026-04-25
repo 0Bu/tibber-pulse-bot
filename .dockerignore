@@ -1,0 +1,5 @@
+tibber-pulse-bot
+.git
+*.md
+Dockerfile
+.dockerignore

@@ -1,0 +1,74 @@
+image:
+  repository: ghcr.io/0bu/tibber-pulse-bot
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+# Tibber Pulse Bridge connection
+pulse:
+  host: ""              # required, e.g. 192.168.107.118
+  node: 1
+
+  # --- Password supply (pick exactly one) ---------------------------------
+  #
+  # 1) inline plain password (dev only — DO NOT commit to git)
+  password: ""
+  #
+  # 2) sealed-secret ciphertext checked into git (recommended for GitOps);
+  #    requires the bitnami sealed-secrets controller running in-cluster.
+  #    Encrypt with:
+  #      echo -n 'AD56-54BA' | kubeseal --raw \
+  #        --name <release-name> --namespace <ns> \
+  #        --controller-namespace kube-system
+  #    paste the output here:
+  sealedSecret:
+    encryptedPassword: ""
+    # Optional: override the SealedSecret scope. Default scope is
+    # "strict" (name + namespace must match). Use "namespace-wide" or
+    # "cluster-wide" if your kubeseal command used --scope.
+    scope: ""
+  #
+  # 3) reference a Secret you create out-of-band (external-secrets,
+  #    sops-flux, plain `kubectl create secret`, etc.). Must contain
+  #    a key `TIBBER_PULSE_PASSWORD`.
+  existingSecret: ""
+  # ------------------------------------------------------------------------
+
+# MQTT broker target
+mqtt:
+  host: ""              # required, e.g. mosquitto.default.svc.cluster.local
+  port: 1883
+  topic: "tibber/pulse"
+  clientID: "tibber-pulse-bot"
+
+# Acquisition mode: "push" (WebSocket, recommended) or "poll"
+mode: push
+pollInterval: 10s
+wsIdleTimeout: 60s
+reconnectDelay: 1s
+
+# Suppress per-update stdout line when publishing to MQTT
+quiet: false
+
+# Standard chart knobs
+replicaCount: 1
+resources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]

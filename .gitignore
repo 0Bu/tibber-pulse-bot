@@ -1,0 +1,25 @@
+# Binaries
+/tibber-pulse-bot
+/dist/
+
+# Go
+*.test
+*.out
+*.exe
+vendor/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Local env files
+.env
+.env.*
+!.env.example
+
+# Helm
+chart/charts/
+chart/Chart.lock
+*.tgz

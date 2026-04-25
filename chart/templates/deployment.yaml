@@ -1,0 +1,74 @@
+{{- if not .Values.pulse.host -}}
+{{- fail "pulse.host is required (set --set pulse.host=192.168.x.y)" -}}
+{{- end -}}
+{{- if not .Values.mqtt.host -}}
+{{- fail "mqtt.host is required (set --set mqtt.host=...)" -}}
+{{- end -}}
+{{- if and (not .Values.pulse.password) (not .Values.pulse.sealedSecret.encryptedPassword) (not .Values.pulse.existingSecret) -}}
+{{- fail "supply the bridge password via exactly one of: pulse.password, pulse.sealedSecret.encryptedPassword, or pulse.existingSecret" -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tibber-pulse-bot.fullname" . }}
+  labels:
+    {{- include "tibber-pulse-bot.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "tibber-pulse-bot.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tibber-pulse-bot.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          args:
+            - --pulse-host={{ .Values.pulse.host }}
+            - --pulse-node={{ .Values.pulse.node }}
+            - --mode={{ .Values.mode }}
+            - --interval={{ .Values.pollInterval }}
+            - --ws-idle-timeout={{ .Values.wsIdleTimeout }}
+            - --reconnect-delay={{ .Values.reconnectDelay }}
+            - --mqtt-host={{ .Values.mqtt.host }}
+            - --mqtt-port={{ .Values.mqtt.port }}
+            - --mqtt-topic={{ .Values.mqtt.topic }}
+            - --mqtt-client-id={{ .Values.mqtt.clientID }}
+            {{- if .Values.quiet }}
+            - --quiet
+            {{- end }}
+          env:
+            - name: TIBBER_PULSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tibber-pulse-bot.secretName" . }}
+                  key: TIBBER_PULSE_PASSWORD
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

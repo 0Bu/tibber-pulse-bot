@@ -1,0 +1,31 @@
+name: Renovate
+on:
+  schedule:
+    - cron: '0 * * * *'
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: renovatebot/github-action@83ec54fee49ab67d9cd201084c1ff325b4b462e4 # v46.1.10
+        with:
+          token: ${{ secrets.RENOVATE_TOKEN }}
+        env:
+          RENOVATE_PLATFORM: github
+          RENOVATE_PLATFORM_COMMIT: true
+          RENOVATE_EXTENDS: config:best-practices,customManagers:dockerfileVersions,customManagers:helmChartYamlAppVersions,helpers:pinGitHubActionDigests
+          RENOVATE_AUTODISCOVER: true
+          RENOVATE_AUTODISCOVER_FILTER: ${{ github.repository }}
+          RENOVATE_CONFIG_MIGRATION: true
+          RENOVATE_AUTOMERGE: true
+          RENOVATE_BUMP_VERSION: patch
+          RENOVATE_IGNORE_TESTS: true
+          RENOVATE_REBASE_WHEN: never
+          RENOVATE_SEMANTIC_COMMITS: disabled
+#         LOG_LEVEL: debug
+#         RENOVATE_DRY_RUN: full
