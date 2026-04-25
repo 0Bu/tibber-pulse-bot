@@ -2,8 +2,9 @@ apiVersion: v2
 name: tibber-pulse-bot
 description: Bridge → SML → MQTT publisher for Tibber Pulse local meters
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 1.0.0
+# renovate: image=ghcr.io/0bu/tibber-pulse-bot
+appVersion: "1.0.0"
 home: https://github.com/0Bu/tibber-pulse-bot
 sources:
   - https://github.com/0Bu/tibber-pulse-bot

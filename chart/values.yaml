@@ -1,6 +1,7 @@
 image:
   repository: ghcr.io/0bu/tibber-pulse-bot
-  tag: "0.1.0"
+  # tag defaults to chart appVersion; override only for SHA pinning
+  tag: ""
   pullPolicy: IfNotPresent
 
 # Tibber Pulse Bridge connection
