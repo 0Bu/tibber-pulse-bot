@@ -34,6 +34,7 @@ func main() {
 	reconnectDelay := flag.Duration("reconnect-delay", 1*time.Second, "Delay before reconnecting after WS disconnect")
 	verbose := flag.Bool("v", false, "Verbose: log every WS reconnect (default: only real errors)")
 	quiet := flag.Bool("quiet", false, "When --mqtt-host is set, suppress the per-update stdout line")
+	metricsInterval := flag.Duration("metrics-interval", 60*time.Second, "Bridge metrics poll interval (set 0 to disable)")
 	flag.Parse()
 
 	if *pulseHost == "" {
@@ -48,7 +49,11 @@ func main() {
 
 	client := pulse.NewClient(*pulseHost, *pulsePassword, *pulseNode)
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	var sink output.Sink
+	var mqttSink *output.MQTTSink
 	if *mqttHost == "" {
 		sink = output.NewStdoutSink(os.Stdout)
 		log.Printf("mode=%s, host=%s, output=stdout", *mode, *pulseHost)
@@ -57,10 +62,12 @@ func main() {
 		if *haDiscovery {
 			discoveryPrefix = *haDiscoveryPrefix
 		}
-		mqttSink, err := output.NewMQTTSink(*mqttHost, *mqttPort, *mqttClientID, *mqttTopic, discoveryPrefix)
+		s, err := output.NewMQTTSink(*mqttHost, *mqttPort, *mqttClientID, *mqttTopic, discoveryPrefix)
 		if err != nil {
 			log.Fatalf("mqtt connect: %v", err)
 		}
+		mqttSink = s
+		mqttSink.SetBridgeHost(*pulseHost)
 		if *quiet {
 			sink = mqttSink
 		} else {
@@ -72,8 +79,9 @@ func main() {
 	}
 	defer sink.Close()
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
+	if *metricsInterval > 0 {
+		go runMetrics(ctx, client, mqttSink, *metricsInterval)
+	}
 
 	if *mode == "poll" {
 		runPoll(ctx, client, sink, *interval)
@@ -113,6 +121,42 @@ func pollOnce(ctx context.Context, c *pulse.Client, sink output.Sink) error {
 		return fmt.Errorf("no readings in %d byte SML payload", len(body))
 	}
 	return sink.Publish(ctx, readings)
+}
+
+// runMetrics polls /metrics.json on a fixed cadence and forwards the
+// values to MQTT (when mqttSink is non-nil) or stdout (otherwise). One
+// failure logs and then keeps trying on the next tick — bridge metrics
+// are diagnostic, not critical for the SML stream.
+func runMetrics(ctx context.Context, c *pulse.Client, mqttSink *output.MQTTSink, interval time.Duration) {
+	pollAndPublish := func() {
+		fctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		m, err := c.FetchMetrics(fctx)
+		if err != nil {
+			log.Printf("metrics fetch: %v", err)
+			return
+		}
+		if mqttSink != nil {
+			if err := mqttSink.PublishBridge(m); err != nil {
+				log.Printf("metrics publish: %v", err)
+			}
+			return
+		}
+		log.Printf("bridge metrics: V=%.3fV T=%.1f°C RSSI=%.0fdBm uptime=%dh pkg_recv=%d corrupt=%d fw=%s",
+			m.BatteryVoltage, m.Temperature, m.AvgRSSI,
+			m.UptimeMS/3_600_000, m.MeterPkgCountRecv, m.MeterCorruptCountRecv, m.NodeVersion)
+	}
+	pollAndPublish()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pollAndPublish()
+		}
+	}
 }
 
 func runPush(ctx context.Context, c *pulse.Client, sink output.Sink, idle, backoff time.Duration, verbose bool) {
