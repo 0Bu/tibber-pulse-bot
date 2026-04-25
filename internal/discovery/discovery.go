@@ -55,8 +55,21 @@ type Config = map[string]any
 
 // BuildConfig produces the discovery payload for one sensor.
 // stateTopic is the MQTT topic where the bot publishes the value.
-func BuildConfig(name string, spec SensorSpec, dev Device, stateTopic string) Config {
+// bridgeIdentifier, if non-empty, is set as device.via_device so HA links
+// the meter card to the bridge — only safe when the bridge device with
+// that identifier is actually published (otherwise HA renders "Connected
+// via Unnamed device").
+func BuildConfig(name string, spec SensorSpec, dev Device, stateTopic, bridgeIdentifier string) Config {
 	uniqueID := fmt.Sprintf("tibber_pulse_%s_%s", sanitize(dev.MeterSerial), name)
+	device := map[string]any{
+		"identifiers":  []string{dev.MeterSerial},
+		"name":         "Tibber Pulse " + dev.MeterSerial,
+		"manufacturer": manufacturerName(dev.Manufacturer),
+		"model":        "SML 1.04 meter",
+	}
+	if bridgeIdentifier != "" {
+		device["via_device"] = bridgeIdentifier
+	}
 	cfg := Config{
 		"name":                spec.FriendlyName,
 		"has_entity_name":     true,
@@ -66,16 +79,7 @@ func BuildConfig(name string, spec SensorSpec, dev Device, stateTopic string) Co
 		"unit_of_measurement": spec.Unit,
 		"device_class":        spec.DeviceClass,
 		"state_class":         spec.StateClass,
-		// device block must be self-contained — do NOT set via_device
-		// unless we actually publish a parent device with that identifier;
-		// HA renders an unresolved via_device as "Connected via Unnamed
-		// device" on the entity card.
-		"device": map[string]any{
-			"identifiers":  []string{dev.MeterSerial},
-			"name":         "Tibber Pulse " + dev.MeterSerial,
-			"manufacturer": manufacturerName(dev.Manufacturer),
-			"model":        "SML 1.04 meter",
-		},
+		"device":              device,
 	}
 	return cfg
 }

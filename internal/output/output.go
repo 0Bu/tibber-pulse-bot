@@ -10,6 +10,7 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/0Bu/tibber-pulse-bot/internal/discovery"
+	"github.com/0Bu/tibber-pulse-bot/internal/pulse"
 	"github.com/0Bu/tibber-pulse-bot/internal/sml"
 )
 
@@ -162,6 +163,8 @@ type MQTTSink struct {
 	discoveryPrefix string
 	discovered      map[string]bool // sensor name → already announced
 	device          discovery.Device
+	bridge          discovery.BridgeDevice
+	bridgeDiscovered map[string]bool
 }
 
 func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix string) (*MQTTSink, error) {
@@ -181,11 +184,18 @@ func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix s
 		return nil, fmt.Errorf("mqtt: connect %s:%d: %w", host, port, err)
 	}
 	return &MQTTSink{
-		client:          c,
-		prefix:          strings.TrimRight(topicPrefix, "/"),
-		discoveryPrefix: strings.TrimRight(discoveryPrefix, "/"),
-		discovered:      map[string]bool{},
+		client:           c,
+		prefix:           strings.TrimRight(topicPrefix, "/"),
+		discoveryPrefix:  strings.TrimRight(discoveryPrefix, "/"),
+		discovered:       map[string]bool{},
+		bridgeDiscovered: map[string]bool{},
 	}, nil
+}
+
+// SetBridgeHost records the bridge host so meter discovery payloads can
+// link to it via via_device. Call once before the first Publish.
+func (m *MQTTSink) SetBridgeHost(host string) {
+	m.bridge.Host = host
 }
 
 func (m *MQTTSink) Publish(_ context.Context, readings []sml.Reading) error {
@@ -243,7 +253,11 @@ func (m *MQTTSink) maybeAnnounce(readings []sml.Reading) {
 		}
 		stateTopic := m.prefix + "/" + r.Name
 		topic := discovery.ConfigTopic(m.discoveryPrefix, r.Name, m.device)
-		payload, err := discovery.MarshalConfig(discovery.BuildConfig(r.Name, spec, m.device, stateTopic))
+		via := ""
+		if m.bridge.Host != "" {
+			via = m.bridge.Identifier()
+		}
+		payload, err := discovery.MarshalConfig(discovery.BuildConfig(r.Name, spec, m.device, stateTopic, via))
 		if err != nil {
 			continue
 		}
@@ -257,4 +271,74 @@ func (m *MQTTSink) maybeAnnounce(readings []sml.Reading) {
 
 func (m *MQTTSink) Close() {
 	m.client.Disconnect(500)
+}
+
+// PublishBridge publishes one set of bridge metrics under
+// <prefix>/bridge/<name> and (if discovery is enabled) emits retained
+// HA discovery configs for each metric on the first publish.
+func (m *MQTTSink) PublishBridge(metrics pulse.Metrics) error {
+	if m.bridge.Host == "" {
+		// shouldn't happen — caller must SetBridgeHost first
+		return fmt.Errorf("bridge host not set")
+	}
+	m.bridge.SWVersion = metrics.NodeVersion
+
+	values := bridgeMetricMap(metrics)
+
+	if m.discoveryPrefix != "" {
+		m.announceBridge(values)
+	}
+
+	for name, val := range values {
+		topic := m.prefix + "/bridge/" + name
+		payload := fmt.Sprintf("%.3f", val)
+		t := m.client.Publish(topic, 0, false, payload)
+		if !t.WaitTimeout(5 * time.Second) {
+			return fmt.Errorf("mqtt: publish timeout for %s", topic)
+		}
+		if err := t.Error(); err != nil {
+			return fmt.Errorf("mqtt: publish %s: %w", topic, err)
+		}
+	}
+	return nil
+}
+
+// bridgeMetricMap maps the wire fields onto the discovery sensor names.
+// Uptime is converted from ms to seconds (HA duration unit).
+func bridgeMetricMap(m pulse.Metrics) map[string]float64 {
+	return map[string]float64{
+		"battery_voltage":   m.BatteryVoltage,
+		"temperature":       m.Temperature,
+		"rssi":              m.AvgRSSI,
+		"lqi":               m.AvgLQI,
+		"uptime":            float64(m.UptimeMS) / 1000.0,
+		"pkg_sent":          float64(m.MeterPkgCountSent),
+		"pkg_received":      float64(m.MeterPkgCountRecv),
+		"readings_received": float64(m.MeterReadingCountRecv),
+		"corrupt_readings":  float64(m.MeterCorruptCountRecv),
+		"invalid_readings":  float64(m.InvalidMeterReadings),
+	}
+}
+
+func (m *MQTTSink) announceBridge(values map[string]float64) {
+	for name := range values {
+		if m.bridgeDiscovered[name] {
+			continue
+		}
+		spec, ok := discovery.BridgeSensors[name]
+		if !ok {
+			continue
+		}
+		stateTopic := m.prefix + "/bridge/" + name
+		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, m.bridge)
+		payload, err := discovery.MarshalConfig(discovery.BuildBridgeConfig(name, spec, m.bridge, stateTopic))
+		if err != nil {
+			continue
+		}
+		t := m.client.Publish(topic, 0, true, payload)
+		if !t.WaitTimeout(5 * time.Second) {
+			return
+		}
+		m.bridgeDiscovered[name] = true
+	}
 }

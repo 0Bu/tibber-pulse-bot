@@ -121,6 +121,7 @@ Push automatically reconnects when the bridge drops the TCP socket (every
 | `-v` | `false` | Log every WS reconnect (default: only real errors) |
 | `--ha-discovery` | `false` | Publish Home Assistant MQTT-Discovery configs |
 | `--ha-discovery-prefix` | `homeassistant` | HA discovery topic prefix |
+| `--metrics-interval` | `60s` | Bridge metrics (`/metrics.json`) poll cadence; `0` disables |
 
 ## MQTT topics
 
@@ -135,6 +136,15 @@ Known OBIS values are published as `<topic-prefix>/<name>`:
 
 Unknown OBIS codes fall through to `<topic-prefix>/obis/<code>` (e.g.
 `tibber/pulse/obis/1-0:96.50.1_1`).
+
+Bridge metrics from `/metrics.json` are published under
+`<topic-prefix>/bridge/<metric>` every `--metrics-interval` (default 60s):
+`battery_voltage`, `temperature`, `rssi`, `lqi`, `uptime` (s), plus
+counters `pkg_sent`, `pkg_received`, `readings_received`,
+`corrupt_readings`, `invalid_readings`. With `--ha-discovery` they appear
+in HA as a separate **Tibber Pulse Bridge \<host\>** device, and the meter
+device gets a `via_device` link to it (HA shows "Connected via Tibber
+Pulse Bridge \<host\>" on the meter card).
 
 ## Home Assistant integration
 

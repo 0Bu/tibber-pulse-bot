@@ -1,7 +1,9 @@
 image:
   repository: ghcr.io/0bu/tibber-pulse-bot
-  # tag defaults to chart appVersion; override only for SHA pinning
-  tag: "@sha256:359ed462486beed076c07ef0d203b811e90365104cabbcc85f27d46e5dac0379"
+  # tag intentionally omitted — the deployment template falls back to
+  # .Chart.AppVersion. Do NOT add `tag:` here: Renovate's `docker:pinDigests`
+  # preset would convert it to an unusable @sha256 digest pin. Override
+  # via --set image.tag=<sha> at install time if you need SHA pinning.
   pullPolicy: IfNotPresent
 
 # Tibber Pulse Bridge connection
@@ -53,6 +55,10 @@ mode: push
 pollInterval: 10s
 wsIdleTimeout: 60s
 reconnectDelay: 1s
+
+# Bridge metrics: poll /metrics.json on this cadence and publish under
+# <topic>/bridge/<metric>. Set 0 to disable.
+metricsInterval: 60s
 
 # Suppress per-update stdout line when publishing to MQTT
 quiet: false
