@@ -9,6 +9,7 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
+	"github.com/0Bu/tibber-pulse-bot/internal/discovery"
 	"github.com/0Bu/tibber-pulse-bot/internal/sml"
 )
 
@@ -153,9 +154,17 @@ func (t *TeeSink) Close() {
 type MQTTSink struct {
 	client mqtt.Client
 	prefix string
+
+	// HA MQTT-Discovery — when discoveryPrefix is non-empty, the sink emits
+	// one retained config message per known sensor the first time it sees
+	// the sensor in a published batch. Requires the meter_serial reading to
+	// be present (used as the HA device identifier).
+	discoveryPrefix string
+	discovered      map[string]bool // sensor name → already announced
+	device          discovery.Device
 }
 
-func NewMQTTSink(host string, port int, clientID, topicPrefix string) (*MQTTSink, error) {
+func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix string) (*MQTTSink, error) {
 	opts := mqtt.NewClientOptions().
 		AddBroker(fmt.Sprintf("tcp://%s:%d", host, port)).
 		SetClientID(clientID).
@@ -171,10 +180,18 @@ func NewMQTTSink(host string, port int, clientID, topicPrefix string) (*MQTTSink
 	if err := t.Error(); err != nil {
 		return nil, fmt.Errorf("mqtt: connect %s:%d: %w", host, port, err)
 	}
-	return &MQTTSink{client: c, prefix: strings.TrimRight(topicPrefix, "/")}, nil
+	return &MQTTSink{
+		client:          c,
+		prefix:          strings.TrimRight(topicPrefix, "/"),
+		discoveryPrefix: strings.TrimRight(discoveryPrefix, "/"),
+		discovered:      map[string]bool{},
+	}, nil
 }
 
 func (m *MQTTSink) Publish(_ context.Context, readings []sml.Reading) error {
+	if m.discoveryPrefix != "" {
+		m.maybeAnnounce(readings)
+	}
 	for _, r := range readings {
 		suffix := r.Name
 		if suffix == "" {
@@ -196,6 +213,46 @@ func (m *MQTTSink) Publish(_ context.Context, readings []sml.Reading) error {
 		}
 	}
 	return nil
+}
+
+// maybeAnnounce publishes HA discovery configs for any newly seen sensors.
+// Discovery messages are retained so HA can rebuild its device registry on
+// restart. We can only announce once we've seen the meter_serial — that's
+// the HA device identifier and ties all entities to one Device card.
+func (m *MQTTSink) maybeAnnounce(readings []sml.Reading) {
+	if m.device.MeterSerial == "" {
+		for _, r := range readings {
+			switch r.Name {
+			case "meter_serial":
+				m.device.MeterSerial = r.Raw
+			case "manufacturer":
+				m.device.Manufacturer = r.Raw
+			}
+		}
+		if m.device.MeterSerial == "" {
+			return // wait for next frame
+		}
+	}
+	for _, r := range readings {
+		if r.Name == "" || m.discovered[r.Name] {
+			continue
+		}
+		spec, ok := discovery.Sensors[r.Name]
+		if !ok {
+			continue // no HA metadata for this OBIS — skip discovery
+		}
+		stateTopic := m.prefix + "/" + r.Name
+		topic := discovery.ConfigTopic(m.discoveryPrefix, r.Name, m.device)
+		payload, err := discovery.MarshalConfig(discovery.BuildConfig(r.Name, spec, m.device, stateTopic))
+		if err != nil {
+			continue
+		}
+		t := m.client.Publish(topic, 0, true, payload) // retain=true is required by HA
+		if !t.WaitTimeout(5 * time.Second) {
+			return
+		}
+		m.discovered[r.Name] = true
+	}
 }
 
 func (m *MQTTSink) Close() {

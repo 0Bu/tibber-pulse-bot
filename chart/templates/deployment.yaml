@@ -49,6 +49,10 @@ spec:
             - --mqtt-port={{ .Values.mqtt.port }}
             - --mqtt-topic={{ .Values.mqtt.topic }}
             - --mqtt-client-id={{ .Values.mqtt.clientID }}
+            {{- if .Values.homeAssistant.discovery }}
+            - --ha-discovery
+            - --ha-discovery-prefix={{ .Values.homeAssistant.discoveryPrefix }}
+            {{- end }}
             {{- if .Values.quiet }}
             - --quiet
             {{- end }}

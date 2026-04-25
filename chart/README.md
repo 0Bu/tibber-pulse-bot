@@ -109,6 +109,8 @@ Top-level keys in `values.yaml`:
 | `wsIdleTimeout` | `60s` | Reconnect WS if no message arrives |
 | `reconnectDelay` | `1s` | Delay before reconnecting after WS drop |
 | `quiet` | `false` | Suppress per-update stdout one-liner |
+| `homeAssistant.discovery` | `false` | Publish HA MQTT-Discovery configs |
+| `homeAssistant.discoveryPrefix` | `homeassistant` | HA discovery topic prefix |
 | `resources` | 10m / 16Mi req, 64Mi limit | Container resource requests/limits |
 
 The chart fails the install if `pulse.host` or `mqtt.host` is empty, so

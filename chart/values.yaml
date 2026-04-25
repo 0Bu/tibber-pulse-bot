@@ -40,6 +40,13 @@ mqtt:
   topic: "tibber/pulse"
   clientID: "tibber-pulse-bot"
 
+# Home Assistant MQTT-Discovery — when enabled, the bot publishes one
+# retained config message per known sensor so HA auto-creates entities
+# under a device named after the meter serial.
+homeAssistant:
+  discovery: false
+  discoveryPrefix: "homeassistant"
+
 # Acquisition mode: "push" (WebSocket, recommended) or "poll"
 mode: push
 pollInterval: 10s

@@ -119,6 +119,8 @@ Push automatically reconnects when the bridge drops the TCP socket (every
 | `--mqtt-client-id` | `tibber-pulse-bot` | MQTT client id |
 | `--quiet` | `false` | Suppress per-update stdout when `--mqtt-host` is set |
 | `-v` | `false` | Log every WS reconnect (default: only real errors) |
+| `--ha-discovery` | `false` | Publish Home Assistant MQTT-Discovery configs |
+| `--ha-discovery-prefix` | `homeassistant` | HA discovery topic prefix |
 
 ## MQTT topics
 
@@ -133,6 +135,28 @@ Known OBIS values are published as `<topic-prefix>/<name>`:
 
 Unknown OBIS codes fall through to `<topic-prefix>/obis/<code>` (e.g.
 `tibber/pulse/obis/1-0:96.50.1_1`).
+
+## Home Assistant integration
+
+Pass `--ha-discovery` to enable [MQTT
+Discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery).
+On the first SML frame the bot publishes one **retained** config message per
+known sensor under `homeassistant/sensor/<unique_id>/config`. HA picks them up
+automatically and groups all entities under one Device named after the meter
+serial (e.g. `Tibber Pulse LGZ-81199038`).
+
+```bash
+tibber-pulse-bot --pulse-host 192.168.107.118 --pulse-password ... \
+  --mqtt-host 192.168.1.27 --ha-discovery
+```
+
+Each entity gets the right `device_class` / `state_class` /
+`unit_of_measurement` so it shows up correctly in the HA Energy dashboard
+(`energy_import_total` and `energy_export_total` are tagged as
+`total_increasing` energy in Wh — usable as Grid consumption / Return to
+grid sources directly). When the MSB later enables the extended EDL40
+profile (per-phase power, voltage, current, frequency), those entities
+appear in HA automatically — the bot announces newly seen sensors on the fly.
 
 ## Stdout output
 
