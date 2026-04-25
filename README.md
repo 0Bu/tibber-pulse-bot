@@ -22,12 +22,82 @@ no Home Assistant required.
 
 - A Tibber Pulse Bridge with a SML 1.04 meter (e.g. Landis+Gyr E220)
 - The 9-character bridge admin password (printed on the sticker, format `XXXX-XXXX`)
-- `webserver_force_enable` (param 39) set to `TRUE` on the bridge — done once
-  via the bridge's AP-mode console
+- `webserver_force_enable` (param 39) set to `TRUE` on the bridge — see
+  [Enabling the local web server](#enabling-the-local-web-server) below
 - An MQTT broker (e.g. Mosquitto)
 
 If your meter is in PIN-locked mode, ask your *Messstellenbetreiber* (MSB) to
 unlock the optical interface — see [Meter PIN & data scope](#meter-pin--data-scope).
+
+### Enabling the local web server
+
+Out of the box, the Tibber Pulse Bridge keeps its local HTTP server **off**
+to save power and limit attack surface. The bot needs it on. The setting
+is `param 39 / webserver_force_enable` and changing it requires putting
+the bridge into **AP (access-point) mode** once — the local web UI is
+unreachable in normal operation precisely because of this flag.
+
+You only need to do this once per bridge.
+
+**Hardware:** the bridge is the small white plug-in box that sits in your
+fuse cabinet next to (or wirelessly near) the meter. It has an LED on
+the front and a tiny **reset/pairing button** in a pinhole on the side
+(some revisions have a visible button instead).
+
+#### 1. Enter AP mode
+
+1. Unplug the bridge from the wall outlet.
+2. With a paperclip / SIM tool, **press and hold the pinhole button**.
+3. **Plug the bridge back in** while still holding the button.
+4. Keep holding for ~10 s, until the LED starts blinking **blue**.
+5. Release. The bridge is now broadcasting a temporary WiFi network.
+
+#### 2. Connect to the bridge's AP
+
+- On your phone or laptop, look for a WiFi SSID like
+  **`TibberBridge-XXXXXX`** (the suffix matches the EUI on the sticker).
+- The WPA2 password is the **same 9-character code** printed on the
+  bridge sticker (format `XXXX-XXXX`) — the one you also use as the
+  admin password later.
+- After connecting, the bridge's gateway is typically `10.133.70.1`.
+  Some firmware revisions advertise a captive portal that pops up
+  automatically.
+
+#### 3. Flip param 39
+
+1. Open `http://10.133.70.1/` in a browser.
+2. Log in with username `admin`, password = the same 9-char code.
+3. Click **Params** in the top nav.
+4. Scroll to **`param_id 39  webserver_force_enable`** (it's a `bool`,
+   currently `FALSE`).
+5. Set it to **`TRUE`** and click **Save** / **Apply**.
+6. While you're there, write down the **EUI** shown on the **Nodes** page
+   (16-hex-char string) — handy later for HA device naming.
+
+#### 4. Leave AP mode
+
+- **Unplug and replug** the bridge (no button this time).
+- It boots back into normal mode, reconnects to your home WiFi, and the
+  web server now answers on its DHCP IP.
+
+#### 5. Verify
+
+```bash
+curl -u admin:XXXX-XXXX -I "http://<bridge-ip>/data.json?node_id=1"
+# expect: HTTP/1.1 200 OK   Content-Type: text/text
+```
+
+If you get `401 Unauthorized` instead, the password is wrong. If you get
+no response at all, the bridge isn't reachable on your LAN — check DHCP /
+that it actually rejoined WiFi. If you get the SPA HTML shell from
+`http://<bridge-ip>/`, the web server is up but you may have hit the SPA
+route (`/nodes/1/data`) instead of the data endpoint
+(`/data.json?node_id=1`); use the JSON path.
+
+> **Note**: AP mode also doubles as a factory-reset entry point. Holding
+> the button longer (~30 s) on some firmware revisions wipes the WiFi
+> credentials. If you only want to flip param 39, release as soon as the
+> LED turns blue.
 
 ---
 
