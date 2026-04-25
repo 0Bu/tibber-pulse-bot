@@ -137,14 +137,31 @@ Known OBIS values are published as `<topic-prefix>/<name>`:
 Unknown OBIS codes fall through to `<topic-prefix>/obis/<code>` (e.g.
 `tibber/pulse/obis/1-0:96.50.1_1`).
 
-Bridge metrics from `/metrics.json` are published under
-`<topic-prefix>/bridge/<metric>` every `--metrics-interval` (default 60s):
-`battery_voltage`, `temperature`, `rssi`, `lqi`, `uptime` (s), plus
-counters `pkg_sent`, `pkg_received`, `readings_received`,
-`corrupt_readings`, `invalid_readings`. With `--ha-discovery` they appear
-in HA as a separate **Tibber Pulse Bridge \<host\>** device, and the meter
-device gets a `via_device` link to it (HA shows "Connected via Tibber
-Pulse Bridge \<host\>" on the meter card).
+Bridge state is fetched from `/metrics.json`, `/nodes.json`, `/status.json`
+and `/ota_manifest.json` every `--metrics-interval` (default 60s) and
+published under `<topic-prefix>/bridge/<name>`:
+
+| Source | Sensor | Type |
+|---|---|---|
+| metrics.json | `battery_voltage`, `temperature`, `rssi` (meter link), `lqi`, `uptime`, `pkg_sent`, `pkg_received`, `readings_received`, `corrupt_readings`, `invalid_readings` | numeric |
+| nodes.json | `last_data_age` (s since last meter telegram) | numeric |
+| nodes.json | `available` | binary `ON`/`OFF` |
+| status.json | `wifi_rssi` (router link, distinct from `rssi`) | numeric |
+| status.json | `cloud_mqtt` (Tibber cloud connection) | binary `ON`/`OFF` |
+| ota_manifest.json | `update_available` (any component out of date) | binary `ON`/`OFF` |
+
+With `--ha-discovery` they appear as a separate **Tibber Pulse Bridge
+\<EUI\>** device in HA. The bridge device card shows both ESP32 hub and
+EFR32 node firmware versions, the bridge's MAC-style EUI under
+"connections", and a "Visit device" link to the bridge web UI. The meter
+device gets a `via_device` link so HA shows "Connected via Tibber Pulse
+Bridge …" on the meter card.
+
+> Migration note (v1.0.4 → v1.0.5): the bridge identifier changed from
+> IP-based to EUI-based (DHCP-stable). On first run, v1.0.5 publishes
+> empty retained payloads to the legacy IP-based discovery topics so HA
+> garbage-collects the old "Tibber Pulse Bridge \<ip\>" device card. If
+> HA still shows the orphan device, delete it manually once.
 
 ## Home Assistant integration
 

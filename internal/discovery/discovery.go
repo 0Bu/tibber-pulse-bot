@@ -18,28 +18,39 @@ type SensorSpec struct {
 	DeviceClass  string // "power", "energy", "voltage", "current", "frequency"
 	StateClass   string // "measurement" or "total_increasing"
 	Unit         string // unit_of_measurement
+	// Component is the HA discovery component, default "sensor". Set to
+	// "binary_sensor" for boolean states (HA payload "ON"/"OFF").
+	Component string
+}
+
+// component returns "sensor" when unset.
+func (s SensorSpec) component() string {
+	if s.Component == "" {
+		return "sensor"
+	}
+	return s.Component
 }
 
 // Sensors maps the bot's reading.Name to the HA discovery metadata.
 // Keep in sync with internal/sml/parse.go obisNames.
 var Sensors = map[string]SensorSpec{
-	"power_total":         {"Power", "power", "measurement", "W"},
-	"power_l1":            {"Power L1", "power", "measurement", "W"},
-	"power_l2":            {"Power L2", "power", "measurement", "W"},
-	"power_l3":            {"Power L3", "power", "measurement", "W"},
-	"energy_import_total": {"Energy Import", "energy", "total_increasing", "Wh"},
-	"energy_import_t1":    {"Energy Import T1", "energy", "total_increasing", "Wh"},
-	"energy_import_t2":    {"Energy Import T2", "energy", "total_increasing", "Wh"},
-	"energy_export_total": {"Energy Export", "energy", "total_increasing", "Wh"},
-	"energy_export_t1":    {"Energy Export T1", "energy", "total_increasing", "Wh"},
-	"energy_export_t2":    {"Energy Export T2", "energy", "total_increasing", "Wh"},
-	"voltage_l1":          {"Voltage L1", "voltage", "measurement", "V"},
-	"voltage_l2":          {"Voltage L2", "voltage", "measurement", "V"},
-	"voltage_l3":          {"Voltage L3", "voltage", "measurement", "V"},
-	"current_l1":          {"Current L1", "current", "measurement", "A"},
-	"current_l2":          {"Current L2", "current", "measurement", "A"},
-	"current_l3":          {"Current L3", "current", "measurement", "A"},
-	"frequency":           {"Frequency", "frequency", "measurement", "Hz"},
+	"power_total":         {"Power", "power", "measurement", "W", ""},
+	"power_l1":            {"Power L1", "power", "measurement", "W", ""},
+	"power_l2":            {"Power L2", "power", "measurement", "W", ""},
+	"power_l3":            {"Power L3", "power", "measurement", "W", ""},
+	"energy_import_total": {"Energy Import", "energy", "total_increasing", "Wh", ""},
+	"energy_import_t1":    {"Energy Import T1", "energy", "total_increasing", "Wh", ""},
+	"energy_import_t2":    {"Energy Import T2", "energy", "total_increasing", "Wh", ""},
+	"energy_export_total": {"Energy Export", "energy", "total_increasing", "Wh", ""},
+	"energy_export_t1":    {"Energy Export T1", "energy", "total_increasing", "Wh", ""},
+	"energy_export_t2":    {"Energy Export T2", "energy", "total_increasing", "Wh", ""},
+	"voltage_l1":          {"Voltage L1", "voltage", "measurement", "V", ""},
+	"voltage_l2":          {"Voltage L2", "voltage", "measurement", "V", ""},
+	"voltage_l3":          {"Voltage L3", "voltage", "measurement", "V", ""},
+	"current_l1":          {"Current L1", "current", "measurement", "A", ""},
+	"current_l2":          {"Current L2", "current", "measurement", "A", ""},
+	"current_l3":          {"Current L3", "current", "measurement", "A", ""},
+	"frequency":           {"Frequency", "frequency", "measurement", "Hz", ""},
 }
 
 // Device groups all sensors of one physical meter under a single HA Device.

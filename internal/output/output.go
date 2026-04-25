@@ -273,25 +273,58 @@ func (m *MQTTSink) Close() {
 	m.client.Disconnect(500)
 }
 
-// PublishBridge publishes one set of bridge metrics under
-// <prefix>/bridge/<name> and (if discovery is enabled) emits retained
-// HA discovery configs for each metric on the first publish.
-func (m *MQTTSink) PublishBridge(metrics pulse.Metrics) error {
+// BridgeUpdate bundles all four bridge data sources for a single publish.
+// Node/Status/OTA may be nil/empty if their endpoint failed; the publisher
+// degrades gracefully and only emits sensors backed by present data.
+type BridgeUpdate struct {
+	Metrics pulse.Metrics
+	Node    *pulse.Node
+	Status  *pulse.Status
+	OTA     []pulse.OTAEntry
+}
+
+// PublishBridgeUpdate publishes bridge metrics + node/status/OTA derived
+// values under <prefix>/bridge/<name>. On the first call after EUI is
+// known, retained HA discovery configs are emitted (or refreshed) for every
+// sensor that has metadata in discovery.BridgeSensors.
+func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 	if m.bridge.Host == "" {
-		// shouldn't happen — caller must SetBridgeHost first
 		return fmt.Errorf("bridge host not set")
 	}
-	m.bridge.SWVersion = metrics.NodeVersion
+	m.bridge.NodeVersion = u.Metrics.NodeVersion
+	if u.Status != nil {
+		m.bridge.ESPVersion = u.Status.Firmware.ESP
+		m.bridge.EFRVersion = u.Status.Firmware.EFR
+	}
+	if u.Node != nil {
+		// EUI transition: clear the legacy IP-based discovery topics from
+		// v1.0.4 (HA picks up empty retained payload as "remove device"),
+		// then re-publish under the new EUI-based identifier.
+		if m.bridge.EUI != u.Node.EUI {
+			if m.bridge.EUI == "" {
+				// First time we learn the EUI — always best-effort sweep
+				// of legacy IP-based topics, idempotent if nothing's there.
+				m.cleanupOldBridgeDiscovery()
+			}
+			m.bridge.EUI = u.Node.EUI
+			m.bridge.ProductModel = u.Node.ProductModel
+			m.bridge.NodeModel = u.Node.Model
+			m.bridgeDiscovered = map[string]bool{}
+		}
+	}
 
-	values := bridgeMetricMap(metrics)
+	values := bridgeStateMap(u)
 
 	if m.discoveryPrefix != "" {
 		m.announceBridge(values)
 	}
 
-	for name, val := range values {
+	for name, raw := range values {
 		topic := m.prefix + "/bridge/" + name
-		payload := fmt.Sprintf("%.3f", val)
+		payload := formatStatePayload(raw)
+		if payload == "" {
+			continue
+		}
 		t := m.client.Publish(topic, 0, false, payload)
 		if !t.WaitTimeout(5 * time.Second) {
 			return fmt.Errorf("mqtt: publish timeout for %s", topic)
@@ -303,24 +336,64 @@ func (m *MQTTSink) PublishBridge(metrics pulse.Metrics) error {
 	return nil
 }
 
-// bridgeMetricMap maps the wire fields onto the discovery sensor names.
-// Uptime is converted from ms to seconds (HA duration unit).
-func bridgeMetricMap(m pulse.Metrics) map[string]float64 {
-	return map[string]float64{
-		"battery_voltage":   m.BatteryVoltage,
-		"temperature":       m.Temperature,
-		"rssi":              m.AvgRSSI,
-		"lqi":               m.AvgLQI,
-		"uptime":            float64(m.UptimeMS) / 1000.0,
-		"pkg_sent":          float64(m.MeterPkgCountSent),
-		"pkg_received":      float64(m.MeterPkgCountRecv),
-		"readings_received": float64(m.MeterReadingCountRecv),
-		"corrupt_readings":  float64(m.MeterCorruptCountRecv),
-		"invalid_readings":  float64(m.InvalidMeterReadings),
+// formatStatePayload renders bool → "ON"/"OFF" (HA binary_sensor default),
+// numeric → 3-decimal string, anything else → empty (skip publish).
+func formatStatePayload(v any) string {
+	switch x := v.(type) {
+	case bool:
+		if x {
+			return "ON"
+		}
+		return "OFF"
+	case float64:
+		return fmt.Sprintf("%.3f", x)
+	case int:
+		return fmt.Sprintf("%d", x)
+	case int64:
+		return fmt.Sprintf("%d", x)
 	}
+	return ""
 }
 
-func (m *MQTTSink) announceBridge(values map[string]float64) {
+// bridgeStateMap merges metrics + node + status + OTA into one flat map
+// keyed by the same names that BridgeSensors uses for HA discovery.
+// Values are bool for binary sensors, float64/int for numeric ones.
+func bridgeStateMap(u BridgeUpdate) map[string]any {
+	out := map[string]any{
+		"battery_voltage":   u.Metrics.BatteryVoltage,
+		"temperature":       u.Metrics.Temperature,
+		"rssi":              u.Metrics.AvgRSSI,
+		"lqi":               u.Metrics.AvgLQI,
+		"uptime":            float64(u.Metrics.UptimeMS) / 1000.0,
+		"pkg_sent":          float64(u.Metrics.MeterPkgCountSent),
+		"pkg_received":      float64(u.Metrics.MeterPkgCountRecv),
+		"readings_received": float64(u.Metrics.MeterReadingCountRecv),
+		"corrupt_readings":  float64(u.Metrics.MeterCorruptCountRecv),
+		"invalid_readings":  float64(u.Metrics.InvalidMeterReadings),
+	}
+	if u.Node != nil {
+		out["available"] = u.Node.Available
+		out["last_data_age"] = float64(u.Node.LastDataMS) / 1000.0
+	}
+	if u.Status != nil {
+		out["wifi_rssi"] = float64(u.Status.WiFi.RSSI)
+		out["cloud_mqtt"] = u.Status.MQTT.Connected
+	}
+	if len(u.OTA) > 0 {
+		// Aggregate: any component out of date → update available.
+		updateAvail := false
+		for _, e := range u.OTA {
+			if !e.Up2Date {
+				updateAvail = true
+				break
+			}
+		}
+		out["update_available"] = updateAvail
+	}
+	return out
+}
+
+func (m *MQTTSink) announceBridge(values map[string]any) {
 	for name := range values {
 		if m.bridgeDiscovered[name] {
 			continue
@@ -330,7 +403,7 @@ func (m *MQTTSink) announceBridge(values map[string]float64) {
 			continue
 		}
 		stateTopic := m.prefix + "/bridge/" + name
-		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, m.bridge)
+		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, m.bridge)
 		payload, err := discovery.MarshalConfig(discovery.BuildBridgeConfig(name, spec, m.bridge, stateTopic))
 		if err != nil {
 			continue
@@ -340,5 +413,17 @@ func (m *MQTTSink) announceBridge(values map[string]float64) {
 			return
 		}
 		m.bridgeDiscovered[name] = true
+	}
+}
+
+// cleanupOldBridgeDiscovery is called once when we transition from an
+// IP-based bridge identifier (v1.0.4) to an EUI-based one (v1.0.5+). It
+// publishes empty retained payloads to the legacy topics so HA garbage
+// collects the orphan device card. Best-effort — failures are ignored.
+func (m *MQTTSink) cleanupOldBridgeDiscovery() {
+	oldDev := discovery.BridgeDevice{Host: m.bridge.Host} // EUI empty → IP-based
+	for name, spec := range discovery.BridgeSensors {
+		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, oldDev)
+		_ = m.client.Publish(topic, 0, true, "")
 	}
 }
