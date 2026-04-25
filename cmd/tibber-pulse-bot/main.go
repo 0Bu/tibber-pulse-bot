@@ -27,6 +27,8 @@ func main() {
 	mqttPort := flag.Int("mqtt-port", 1883, "MQTT broker port")
 	mqttTopic := flag.String("mqtt-topic", "tibber/pulse", "MQTT topic prefix")
 	mqttClientID := flag.String("mqtt-client-id", "tibber-pulse-bot", "MQTT client id")
+	haDiscovery := flag.Bool("ha-discovery", false, "Publish Home Assistant MQTT-Discovery configs (retain=true)")
+	haDiscoveryPrefix := flag.String("ha-discovery-prefix", "homeassistant", "Topic prefix HA listens on for discovery")
 	interval := flag.Duration("interval", 10*time.Second, "Poll interval (only used in poll mode)")
 	idleTimeout := flag.Duration("ws-idle-timeout", 60*time.Second, "Reconnect WS if no message arrives within this window (push mode)")
 	reconnectDelay := flag.Duration("reconnect-delay", 1*time.Second, "Delay before reconnecting after WS disconnect")
@@ -51,7 +53,11 @@ func main() {
 		sink = output.NewStdoutSink(os.Stdout)
 		log.Printf("mode=%s, host=%s, output=stdout", *mode, *pulseHost)
 	} else {
-		mqttSink, err := output.NewMQTTSink(*mqttHost, *mqttPort, *mqttClientID, *mqttTopic)
+		discoveryPrefix := ""
+		if *haDiscovery {
+			discoveryPrefix = *haDiscoveryPrefix
+		}
+		mqttSink, err := output.NewMQTTSink(*mqttHost, *mqttPort, *mqttClientID, *mqttTopic, discoveryPrefix)
 		if err != nil {
 			log.Fatalf("mqtt connect: %v", err)
 		}

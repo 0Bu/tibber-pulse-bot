@@ -153,12 +153,29 @@ done:
    --set mqtt.host=... --set pulse.password=...` for at least one of the
    three password modes; expect zero errors.
 
+## Home Assistant MQTT-Discovery
+
+- Implemented in [`internal/discovery`](internal/discovery/discovery.go).
+- Flags: `--ha-discovery` (off by default) + `--ha-discovery-prefix`
+  (default `homeassistant`).
+- Discovery happens **lazily inside `MQTTSink.Publish`**, not at startup —
+  the meter serial is needed as HA device identifier and only arrives in
+  the first SML frame. Per session, each sensor's config is announced once.
+- Newly appearing sensors (e.g. when MSB later enables EDL40) auto-announce
+  on the fly — no restart needed.
+- Discovery messages are published with **`retain: true`** (HA convention,
+  so HA can rebuild its registry after restart). State messages are NOT
+  retained — they update every 2–4 s.
+- `unique_id` and `object_id` derive from `tibber_pulse_<serial>_<sensor>`
+  (lowercased, non-alphanumerics → underscore) — stable across restarts and
+  bot upgrades.
+- The `discovery.Sensors` map MUST stay in sync with the OBIS-name set in
+  [`internal/sml/parse.go`](internal/sml/parse.go) `obisNames`. Adding a
+  new OBIS code without a discovery entry means HA won't surface it.
+
 ## Out-of-scope reminders for future work
 
 - Adding HAN/SMGW (Smart Meter Gateway) support is a different protocol
   (CMS-encrypted, separate hardware) — not a small extension of this codebase.
-- Auto-discovery of MQTT topics for Home Assistant could be added under a
-  `--ha-discovery` flag without restructuring; topics would publish to
-  `homeassistant/sensor/<id>/config` on startup.
 - A `metrics.json` poller for bridge battery/RSSI/uptime could be added at
   ~30 min cadence as a second goroutine — keep it optional.
