@@ -1,0 +1,18 @@
+services:
+  tibber-pulse-bot:
+    build: .
+    image: tibber-pulse-bot:latest
+    container_name: tibber-pulse-bot
+    restart: unless-stopped
+    environment:
+      TIBBER_PULSE_PASSWORD: ${TIBBER_PULSE_PASSWORD:?set TIBBER_PULSE_PASSWORD in .env}
+    command:
+      - --pulse-host=${TIBBER_PULSE_HOST:?set TIBBER_PULSE_HOST in .env}
+      - --mqtt-host=${MQTT_HOST:?set MQTT_HOST in .env}
+      - --mqtt-port=${MQTT_PORT:-1883}
+      - --mqtt-topic=${MQTT_TOPIC:-tibber/pulse}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
