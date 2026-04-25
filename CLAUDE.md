@@ -96,6 +96,23 @@ distributable as a public GitHub project.
 - **No comments that restate the code.** Only document non-obvious WHY
   (e.g. why we strip `buf[8:len-8]`, why `--reconnect-delay` defaults to 1 s).
 
+## Build-time version injection
+
+- `cmd/tibber-pulse-bot/main.go` declares `var version, commit string`
+  populated via `-ldflags="-X main.version=... -X main.commit=..."`.
+- The Dockerfile takes `VERSION` + `COMMIT` build-args and passes them
+  through. The CI workflow derives `VERSION` from the git tag (or short
+  SHA on main pushes) and `COMMIT` from the short SHA, so every image
+  carries its own provenance.
+- Bot logs `tibber-pulse-bot version=X.Y.Z commit=abc1234` at startup;
+  `--version` exits after printing the same line.
+- Tag scheme in GHCR:
+  - tag `v1.0.4` push → `:1.0.4`, `:1.0`, `:1`, `:1.0.4-<sha>`, `:<sha>`
+  - main push → `:main`, `:<sha>`, `:latest`
+  - PR → `:pr-N` (build only, not pushed)
+- `:<version>-<sha>` exists for unambiguous traceability when bumping
+  patch versions on top of the same release branch.
+
 ## Container / deployment
 
 - **Dockerfile**: `golang:1.26-alpine` builder → `gcr.io/distroless/static-debian12`
