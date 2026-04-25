@@ -17,7 +17,15 @@ import (
 	"github.com/0Bu/tibber-pulse-bot/internal/sml"
 )
 
+// Build-time injected via -ldflags. Falls back to "dev"/"unknown" for
+// local `go build` and `go run`.
+var (
+	version = "dev"
+	commit  = "unknown"
+)
+
 func main() {
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	pulseHost := flag.String("pulse-host", "", "Tibber Pulse Bridge IP/hostname (required)")
 	pulsePassword := flag.String("pulse-password", os.Getenv("TIBBER_PULSE_PASSWORD"),
 		"Bridge admin password (9-char QR code from sticker). Defaults to $TIBBER_PULSE_PASSWORD.")
@@ -36,6 +44,12 @@ func main() {
 	quiet := flag.Bool("quiet", false, "When --mqtt-host is set, suppress the per-update stdout line")
 	metricsInterval := flag.Duration("metrics-interval", 60*time.Second, "Bridge metrics poll interval (set 0 to disable)")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("tibber-pulse-bot version=%s commit=%s\n", version, commit)
+		return
+	}
+	log.Printf("tibber-pulse-bot version=%s commit=%s", version, commit)
 
 	if *pulseHost == "" {
 		log.Fatal("--pulse-host is required")
