@@ -137,28 +137,46 @@ func pollOnce(ctx context.Context, c *pulse.Client, sink output.Sink) error {
 	return sink.Publish(ctx, readings)
 }
 
-// runMetrics polls /metrics.json on a fixed cadence and forwards the
-// values to MQTT (when mqttSink is non-nil) or stdout (otherwise). One
-// failure logs and then keeps trying on the next tick — bridge metrics
-// are diagnostic, not critical for the SML stream.
+// runMetrics polls /metrics.json + /nodes.json + /status.json + /ota_manifest.json
+// on a fixed cadence and forwards the values to MQTT (when mqttSink is
+// non-nil) or stdout (otherwise). Each source is independent — a failure
+// of one is logged and the rest of the data still goes out.
 func runMetrics(ctx context.Context, c *pulse.Client, mqttSink *output.MQTTSink, interval time.Duration) {
 	pollAndPublish := func() {
 		fctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		m, err := c.FetchMetrics(fctx)
+
+		var u output.BridgeUpdate
+		var err error
+
+		u.Metrics, err = c.FetchMetrics(fctx)
 		if err != nil {
 			log.Printf("metrics fetch: %v", err)
-			return
+			return // Metrics is the only one we hard-require
 		}
+		if n, err := c.FetchNode(fctx); err != nil {
+			log.Printf("node fetch: %v", err)
+		} else {
+			u.Node = &n
+		}
+		if s, err := c.FetchStatus(fctx); err != nil {
+			log.Printf("status fetch: %v", err)
+		} else {
+			u.Status = &s
+		}
+		if o, err := c.FetchOTAManifest(fctx); err != nil {
+			log.Printf("ota fetch: %v", err)
+		} else {
+			u.OTA = o
+		}
+
 		if mqttSink != nil {
-			if err := mqttSink.PublishBridge(m); err != nil {
+			if err := mqttSink.PublishBridgeUpdate(u); err != nil {
 				log.Printf("metrics publish: %v", err)
 			}
 			return
 		}
-		log.Printf("bridge metrics: V=%.3fV T=%.1f°C RSSI=%.0fdBm uptime=%dh pkg_recv=%d corrupt=%d fw=%s",
-			m.BatteryVoltage, m.Temperature, m.AvgRSSI,
-			m.UptimeMS/3_600_000, m.MeterPkgCountRecv, m.MeterCorruptCountRecv, m.NodeVersion)
+		logBridgeStdout(u)
 	}
 	pollAndPublish()
 	t := time.NewTicker(interval)
@@ -171,6 +189,46 @@ func runMetrics(ctx context.Context, c *pulse.Client, mqttSink *output.MQTTSink,
 			pollAndPublish()
 		}
 	}
+}
+
+func logBridgeStdout(u output.BridgeUpdate) {
+	m := u.Metrics
+	wifiRSSI := 0
+	cloud := "?"
+	esp, efr := "?", "?"
+	if u.Status != nil {
+		wifiRSSI = u.Status.WiFi.RSSI
+		if u.Status.MQTT.Connected {
+			cloud = "up"
+		} else {
+			cloud = "down"
+		}
+		esp, efr = u.Status.Firmware.ESP, u.Status.Firmware.EFR
+	}
+	avail := "?"
+	lastData := int64(-1)
+	if u.Node != nil {
+		if u.Node.Available {
+			avail = "yes"
+		} else {
+			avail = "no"
+		}
+		lastData = u.Node.LastDataMS / 1000
+	}
+	upd := "?"
+	for _, e := range u.OTA {
+		if !e.Up2Date {
+			upd = "available"
+			break
+		}
+	}
+	if upd == "?" && len(u.OTA) > 0 {
+		upd = "current"
+	}
+	log.Printf("bridge: V=%.3fV T=%.1f°C meterRSSI=%.0fdBm wifiRSSI=%ddBm uptime=%dh pkg_recv=%d corrupt=%d available=%s lastData=%ds cloud=%s update=%s esp=%s efr=%s",
+		m.BatteryVoltage, m.Temperature, m.AvgRSSI, wifiRSSI,
+		m.UptimeMS/3_600_000, m.MeterPkgCountRecv, m.MeterCorruptCountRecv,
+		avail, lastData, cloud, upd, esp, efr)
 }
 
 func runPush(ctx context.Context, c *pulse.Client, sink output.Sink, idle, backoff time.Duration, verbose bool) {
