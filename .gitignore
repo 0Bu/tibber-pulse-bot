@@ -23,3 +23,6 @@ vendor/
 chart/charts/
 chart/Chart.lock
 *.tgz
+
+# Claude Code session artifacts
+.claude/
