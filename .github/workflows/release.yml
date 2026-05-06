@@ -1,0 +1,33 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/**'
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Bump patch version and push tag
+        run: |
+          git fetch --tags
+          LATEST=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$LATEST" ]; then
+            NEXT="v0.1.0"
+          else
+            IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST#v}"
+            NEXT="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$NEXT"
+          git push origin "$NEXT"

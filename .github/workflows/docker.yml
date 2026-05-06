@@ -2,7 +2,6 @@ name: docker
 
 on:
   push:
-    branches: [main]
     tags: ["v*.*.*"]
   pull_request:
     branches: [main]
@@ -15,7 +14,17 @@ env:
   IMAGE_NAME: 0bu/tibber-pulse-bot
 
 jobs:
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1.0.4
+        with:
+          go-version-file: go.mod
+          go-package: ./...
+
   build:
+    needs: vuln
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -39,38 +48,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute version + short SHA
-        id: vars
-        run: |
-          SHORT_SHA=${GITHUB_SHA:0:7}
-          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/v}
-            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-            echo "combined=${VERSION}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=" >> "$GITHUB_OUTPUT"
-            echo "combined=" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Compute image metadata
         id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # Tag scheme:
-          #   on tag v1.0.3 push  → :1.0.3, :1.0, :1, :1.0.3-<sha>, :<sha>
-          #   on main push        → :main, :<sha>, :latest
-          #   on PR               → :pr-<n>
+          #   on tag v1.0.5 push → :1.0.5
+          #   on PR              → :pr-<n> (build only, not pushed)
+          # SHA256 digest is assigned by GHCR automatically:
+          #   image: ghcr.io/0bu/tibber-pulse-bot:1.0.5@sha256:<digest>
           tags: |
-            type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha,prefix=,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ steps.vars.outputs.combined }},enable=${{ steps.vars.outputs.combined != '' }}
 
       - name: Build and push
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
@@ -82,8 +72,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.vars.outputs.version != '' && steps.vars.outputs.version || steps.vars.outputs.short_sha }}
-            COMMIT=${{ steps.vars.outputs.short_sha }}
+            VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+            COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: true
