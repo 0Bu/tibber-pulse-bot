@@ -24,7 +24,6 @@ jobs:
       - name: Bump patch version and push tag
         id: tag
         run: |
-          git fetch --tags
           LATEST=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
           if [ -z "$LATEST" ]; then
             NEXT="v0.1.0"
