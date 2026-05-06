@@ -1,9 +1,6 @@
 image:
   repository: ghcr.io/0bu/tibber-pulse-bot
-  # tag intentionally omitted — the deployment template falls back to
-  # .Chart.AppVersion. Do NOT add `tag:` here: Renovate's `docker:pinDigests`
-  # preset would convert it to an unusable @sha256 digest pin. Override
-  # via --set image.tag=<sha> at install time if you need SHA pinning.
+  tag: 1.0.5@sha256:1c78c19d43473786dfc795a68a25b2452004930ed6665394b1f943409ffd7441
   pullPolicy: IfNotPresent
 
 # Tibber Pulse Bridge connection
