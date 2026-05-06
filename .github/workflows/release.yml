@@ -3,8 +3,11 @@ name: release
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '.github/**'
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
 
 permissions:
   contents: write
