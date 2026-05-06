@@ -64,10 +64,12 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # Tag scheme:
-          #   on tag v1.0.5 push → :1.0.5
+          #   on tag v1.0.6 push → :1.0.6
           #   on PR              → :pr-<n> (build only, not pushed)
-          # SHA256 digest is assigned by GHCR automatically:
-          #   image: ghcr.io/0bu/tibber-pulse-bot:1.0.5@sha256:<digest>
+          # SHA256 digest assigned by GHCR, reference as:
+          #   image: ghcr.io/0bu/tibber-pulse-bot:1.0.6@sha256:<digest>
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=pr
             type=semver,pattern={{version}}
