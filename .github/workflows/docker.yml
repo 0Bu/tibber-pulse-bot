@@ -5,6 +5,11 @@ on:
     tags: ["v*.*.*"]
   pull_request:
     branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
   workflow_dispatch:
 
 env:
