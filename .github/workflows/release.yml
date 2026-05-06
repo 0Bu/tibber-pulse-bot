@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   tag:
@@ -21,6 +22,7 @@ jobs:
           fetch-depth: 0
 
       - name: Bump patch version and push tag
+        id: tag
         run: |
           git fetch --tags
           LATEST=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
@@ -34,3 +36,15 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "$NEXT"
           git push origin "$NEXT"
+          echo "tag=$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger docker build
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'docker.yml',
+              ref: '${{ steps.tag.outputs.tag }}',
+            });
