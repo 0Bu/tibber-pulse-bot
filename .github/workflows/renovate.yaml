@@ -27,7 +27,10 @@ jobs:
           # Wait for required status checks (vuln/test/build) before automerging
           # so a failing dependency bump is never merged automatically.
           RENOVATE_IGNORE_TESTS: false
-          RENOVATE_REBASE_WHEN: never
+          # 'auto' lets Renovate refresh/rebase its PR branches so they pick up
+          # the latest target version and re-run required checks. 'never' froze
+          # PRs (no version bump, no check re-run), which blocked automerge.
+          RENOVATE_REBASE_WHEN: auto
           RENOVATE_SEMANTIC_COMMITS: disabled
 #         LOG_LEVEL: debug
 #         RENOVATE_DRY_RUN: full
