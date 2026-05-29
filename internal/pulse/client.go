@@ -24,10 +24,10 @@ func NewClient(host, password string, nodeID int) *Client {
 	}
 }
 
-// FetchData returns the raw response body of /data.json?node_id=<n>.
-// For SML meters this is a binary SML 1.04 stream containing one or more frames.
-func (c *Client) FetchData(ctx context.Context) ([]byte, error) {
-	url := fmt.Sprintf("http://%s/data.json?node_id=%d", c.host, c.nodeID)
+// get issues an authenticated GET against the bridge and returns the raw
+// response body. Shared by every endpoint (data/metrics/nodes/status/ota);
+// the payload may be binary SML or JSON depending on the URL.
+func (c *Client) get(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -44,4 +44,11 @@ func (c *Client) FetchData(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("pulse %s: HTTP %d", url, resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
+}
+
+// FetchData returns the raw response body of /data.json?node_id=<n>.
+// For SML meters this is a binary SML 1.04 stream containing one or more frames.
+func (c *Client) FetchData(ctx context.Context) ([]byte, error) {
+	url := fmt.Sprintf("http://%s/data.json?node_id=%d", c.host, c.nodeID)
+	return c.get(ctx, url)
 }

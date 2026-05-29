@@ -160,10 +160,10 @@ type MQTTSink struct {
 	// one retained config message per known sensor the first time it sees
 	// the sensor in a published batch. Requires the meter_serial reading to
 	// be present (used as the HA device identifier).
-	discoveryPrefix string
-	discovered      map[string]bool // sensor name → already announced
-	device          discovery.Device
-	bridge          discovery.BridgeDevice
+	discoveryPrefix  string
+	discovered       map[string]bool // sensor name → already announced
+	device           discovery.Device
+	bridge           discovery.BridgeDevice
 	bridgeDiscovered map[string]bool
 }
 
