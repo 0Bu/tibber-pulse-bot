@@ -103,6 +103,18 @@ route (`/nodes/1/data`) instead of the data endpoint
 
 ## Run with Docker
 
+Run the published image, pinned by digest (kept current by Renovate):
+
+```bash
+docker run --rm \
+  -e TIBBER_PULSE_PASSWORD=AD56-54BA \
+  ghcr.io/0bu/tibber-pulse-bot:1.0.10@sha256:5d4d1197b949ac30edafef3899bbb77080d0b59bb7aad99094e98dfbd15a24c0 \
+  --pulse-host 192.168.107.118 \
+  --mqtt-host 192.168.1.27
+```
+
+Or build from source:
+
 ```bash
 docker build -t tibber-pulse-bot .
 

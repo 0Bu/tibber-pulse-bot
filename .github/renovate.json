@@ -1,5 +1,17 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Bump the pinned tibber-pulse-bot image referenced in docs",
+      "managerFilePatterns": ["/^README\\.md$/", "/^CLAUDE\\.md$/"],
+      "matchStrings": [
+        "ghcr\\.io/0bu/tibber-pulse-bot:(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/0bu/tibber-pulse-bot"
+    }
+  ],
   "packageRules": [
     {
       "matchFileNames": ["**/Chart.yaml"],
