@@ -113,13 +113,20 @@ distributable as a public GitHub project.
   and [`docker-compose.yml`](docker-compose.yml)). PR builds produce a local
   `:pr-N` tag but are never pushed (`docker/metadata-action` `flavor:
   latest=false`, single `type=semver,pattern={{version}}`).
+- After a tag build pushes the image, the docker workflow dispatches Renovate,
+  which bumps the chart (`values.yaml` tag + `Chart.yaml`), `docker-compose.yml`,
+  and the pinned image in the docs to the new version+digest. Those bumps are
+  path-filtered out of the release trigger, so they never start another
+  tag/build — only `**.go` / `go.mod` / `go.sum` / `Dockerfile` changes do.
 
 ## Container / deployment
 
-- **Dockerfile**: `golang:1.26-alpine` builder → `gcr.io/distroless/static-debian12`
+- **Dockerfile**: `golang:1.26-alpine` builder, cross-compiles on
+  `$BUILDPLATFORM` with `GOOS/GOARCH` (no QEMU) → `gcr.io/distroless/static-debian12`
   runtime. `CGO_ENABLED=0`, runs as UID 65532, no shell, no extra files.
-- **docker-compose.yml**: reads `.env` (git-ignored), `.env.example` is the
-  template. Required variables fail-fast (`${VAR:?...}` syntax).
+- **docker-compose.yml**: runs the published, digest-pinned GHCR image
+  (Renovate-managed), not a local build. Reads `.env` (git-ignored),
+  `.env.example` is the template. Required variables fail-fast (`${VAR:?...}`).
 - **Helm chart** (`chart/`): self-contained, follows the same parent-chart
   layout as [rpi-k3s-cluster](https://github.com/0Bu/rpi-k3s-cluster)
   charts. Three mutually exclusive password supply modes (chart fails if
@@ -158,7 +165,12 @@ distributable as a public GitHub project.
 
 ## Verification protocol
 
-When changing the bridge or SML code, re-run end-to-end before reporting
+`gofmt -l .` (empty), `go vet ./...`, and `go test ./...` must pass —
+these are CI-gated (the `test` workflow runs on every PR and is a required
+check on `main`; code PRs additionally run the image build). Unit tests
+cover the pure logic (SML/OBIS/FNN decode, WS frame parsing, HA discovery).
+
+When changing the bridge or SML code, also re-run end-to-end before reporting
 done:
 
 1. **Stdout-only smoke test**:
