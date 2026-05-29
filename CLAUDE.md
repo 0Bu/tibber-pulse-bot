@@ -102,16 +102,17 @@ distributable as a public GitHub project.
   populated via `-ldflags="-X main.version=... -X main.commit=..."`.
 - The Dockerfile takes `VERSION` + `COMMIT` build-args and passes them
   through. The CI workflow derives `VERSION` from the git tag (or short
-  SHA on main pushes) and `COMMIT` from the short SHA, so every image
+  SHA for non-tag builds) and `COMMIT` from the short SHA, so every image
   carries its own provenance.
 - Bot logs `tibber-pulse-bot version=X.Y.Z commit=abc1234` at startup;
   `--version` exits after printing the same line.
-- Tag scheme in GHCR:
-  - tag `v1.0.4` push → `:1.0.4`, `:1.0`, `:1`, `:1.0.4-<sha>`, `:<sha>`
-  - main push → `:main`, `:<sha>`, `:latest`
-  - PR → `:pr-N` (build only, not pushed)
-- `:<version>-<sha>` exists for unambiguous traceability when bumping
-  patch versions on top of the same release branch.
+- Tag scheme in GHCR: a `vX.Y.Z` tag push builds and pushes **exactly one**
+  image tag `:X.Y.Z` — deliberately **no** `:latest`, no floating `:X` /
+  `:X.Y`, no `:main`, no bare `:<sha>`. Consumers always pin the immutable
+  digest `:X.Y.Z@sha256:<digest>` (see [`chart/values.yaml`](chart/values.yaml)
+  and [`docker-compose.yml`](docker-compose.yml)). PR builds produce a local
+  `:pr-N` tag but are never pushed (`docker/metadata-action` `flavor:
+  latest=false`, single `type=semver,pattern={{version}}`).
 
 ## Container / deployment
 
