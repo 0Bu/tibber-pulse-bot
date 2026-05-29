@@ -24,7 +24,9 @@ jobs:
           RENOVATE_CONFIG_MIGRATION: true
           RENOVATE_AUTOMERGE: true
           RENOVATE_BUMP_VERSION: patch
-          RENOVATE_IGNORE_TESTS: true
+          # Wait for required status checks (vuln/test/build) before automerging
+          # so a failing dependency bump is never merged automatically.
+          RENOVATE_IGNORE_TESTS: false
           RENOVATE_REBASE_WHEN: never
           RENOVATE_SEMANTIC_COMMITS: disabled
 #         LOG_LEVEL: debug
