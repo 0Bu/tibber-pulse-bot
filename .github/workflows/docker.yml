@@ -3,13 +3,12 @@ name: docker
 on:
   push:
     tags: ["v*.*.*"]
+  # No paths filter: the test/vuln/build jobs must run on every PR so the
+  # `test` check always reports and can be a required status check on main.
+  # A paths filter would skip the whole workflow for chart/workflow/doc-only
+  # PRs, leaving a required check forever pending and blocking merge.
   pull_request:
     branches: [main]
-    paths:
-      - '**.go'
-      - 'go.mod'
-      - 'go.sum'
-      - 'Dockerfile'
   workflow_dispatch:
 
 env:
