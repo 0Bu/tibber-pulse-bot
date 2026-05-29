@@ -11,11 +11,11 @@ import (
 // IP changes and reboots. Host stays as a fallback so older deployments
 // still produce a usable identifier when /nodes.json hasn't been read yet.
 type BridgeDevice struct {
-	Host       string // e.g. "192.168.107.118"
-	EUI        string // e.g. "30fb10fffe9326a9"
-	ESPVersion string // /status.json firmware.esp
-	EFRVersion string // /status.json firmware.efr
-	NodeVersion string // /metrics.json node_version (from hub_attachments)
+	Host         string // e.g. "192.168.107.118"
+	EUI          string // e.g. "30fb10fffe9326a9"
+	ESPVersion   string // /status.json firmware.esp
+	EFRVersion   string // /status.json firmware.efr
+	NodeVersion  string // /metrics.json node_version (from hub_attachments)
 	ProductModel string // /nodes.json product_model, e.g. "TFD01"
 	NodeModel    string // /nodes.json model, e.g. "tibber-pulse-ir-node-efr32"
 }
@@ -47,13 +47,13 @@ var BridgeSensors = map[string]SensorSpec{
 	"corrupt_readings":  {"Corrupt Readings", "", "total_increasing", "", ""},
 	"invalid_readings":  {"Invalid Readings", "", "total_increasing", "", ""},
 	// /status.json
-	"wifi_rssi":         {"WiFi RSSI", "signal_strength", "measurement", "dBm", ""},
+	"wifi_rssi": {"WiFi RSSI", "signal_strength", "measurement", "dBm", ""},
 	// /nodes.json
-	"last_data_age":     {"Last Data Age", "duration", "measurement", "s", ""},
+	"last_data_age": {"Last Data Age", "duration", "measurement", "s", ""},
 	// binary sensors (HA payload "ON"/"OFF")
-	"available":         {"Available", "connectivity", "", "", "binary_sensor"},
-	"cloud_mqtt":        {"Tibber Cloud MQTT", "connectivity", "", "", "binary_sensor"},
-	"update_available":  {"Update Available", "update", "", "", "binary_sensor"},
+	"available":        {"Available", "connectivity", "", "", "binary_sensor"},
+	"cloud_mqtt":       {"Tibber Cloud MQTT", "connectivity", "", "", "binary_sensor"},
+	"update_available": {"Update Available", "update", "", "", "binary_sensor"},
 }
 
 // BuildBridgeConfig produces the discovery payload for one bridge metric.

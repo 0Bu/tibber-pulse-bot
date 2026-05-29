@@ -20,7 +20,7 @@ import (
 // Build-time injected via -ldflags. Falls back to "dev"/"unknown" for
 // local `go build` and `go run`.
 var (
-	version = "dev"    // overridden by -ldflags at build time
+	version = "dev"     // overridden by -ldflags at build time
 	commit  = "unknown" // overridden by -ldflags at build time
 )
 

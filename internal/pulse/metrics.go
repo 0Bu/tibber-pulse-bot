@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 )
 
 // Metrics is the parsed JSON from /metrics.json?node_id=N.
@@ -16,18 +14,18 @@ import (
 // are flattened in the Go struct to keep callers terse.
 type Metrics struct {
 	// node_status: hardware/radio metrics from the ESP32 plugged into the meter
-	BatteryVoltage           float64 `json:"node_battery_voltage"`
-	Temperature              float64 `json:"node_temperature"`
-	AvgRSSI                  float64 `json:"node_avg_rssi"`
-	AvgLQI                   float64 `json:"node_avg_lqi"`
-	RadioTxPower             int     `json:"radio_tx_power"`
-	UptimeMS                 int64   `json:"node_uptime_ms"`
-	MeterMsgCountSent        int     `json:"meter_msg_count_sent"`
-	MeterPkgCountSent        int     `json:"meter_pkg_count_sent"`
-	InvalidMeterReadings     int     `json:"invalid_meter_readings_count"`
-	MeterMode                int     `json:"meter_mode"`
-	BootloaderVersion        int64   `json:"bootloader_version"`
-	ProductID                int     `json:"product_id"`
+	BatteryVoltage       float64 `json:"node_battery_voltage"`
+	Temperature          float64 `json:"node_temperature"`
+	AvgRSSI              float64 `json:"node_avg_rssi"`
+	AvgLQI               float64 `json:"node_avg_lqi"`
+	RadioTxPower         int     `json:"radio_tx_power"`
+	UptimeMS             int64   `json:"node_uptime_ms"`
+	MeterMsgCountSent    int     `json:"meter_msg_count_sent"`
+	MeterPkgCountSent    int     `json:"meter_pkg_count_sent"`
+	InvalidMeterReadings int     `json:"invalid_meter_readings_count"`
+	MeterMode            int     `json:"meter_mode"`
+	BootloaderVersion    int64   `json:"bootloader_version"`
+	ProductID            int     `json:"product_id"`
 
 	// hub_attachments: bridge-side counters
 	MeterPkgCountRecv        int    `json:"meter_pkg_count_recv"`
@@ -48,21 +46,7 @@ type metricsEnvelope struct {
 // Fields not present in either section stay at their Go zero value.
 func (c *Client) FetchMetrics(ctx context.Context) (Metrics, error) {
 	url := fmt.Sprintf("http://%s/metrics.json?node_id=%d", c.host, c.nodeID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return Metrics{}, err
-	}
-	req.SetBasicAuth("admin", c.password)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return Metrics{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return Metrics{}, fmt.Errorf("pulse %s: HTTP %d", url, resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := c.get(ctx, url)
 	if err != nil {
 		return Metrics{}, err
 	}
@@ -70,18 +54,14 @@ func (c *Client) FetchMetrics(ctx context.Context) (Metrics, error) {
 	if err := json.Unmarshal(body, &env); err != nil {
 		return Metrics{}, fmt.Errorf("metrics decode: %w (%d bytes)", err, len(body))
 	}
-	// Merge: hub_attachments overrides only the fields it carries.
+	// Merge the two wire sections into one flat struct. node_status carries
+	// the radio/hardware fields; the recv/corrupt/compression counters and
+	// node_version live only in hub_attachments, so take them verbatim.
 	m := env.NodeStatus
-	if env.HubAttachments.MeterPkgCountRecv != 0 {
-		m.MeterPkgCountRecv = env.HubAttachments.MeterPkgCountRecv
-	}
-	if env.HubAttachments.MeterReadingCountRecv != 0 {
-		m.MeterReadingCountRecv = env.HubAttachments.MeterReadingCountRecv
-	}
+	m.MeterPkgCountRecv = env.HubAttachments.MeterPkgCountRecv
+	m.MeterReadingCountRecv = env.HubAttachments.MeterReadingCountRecv
 	m.MeterCorruptCountRecv = env.HubAttachments.MeterCorruptCountRecv
 	m.CompressionErrorReadings = env.HubAttachments.CompressionErrorReadings
-	if env.HubAttachments.NodeVersion != "" {
-		m.NodeVersion = env.HubAttachments.NodeVersion
-	}
+	m.NodeVersion = env.HubAttachments.NodeVersion
 	return m, nil
 }

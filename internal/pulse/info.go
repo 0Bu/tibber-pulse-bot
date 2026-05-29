@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 )
 
 // Node mirrors one entry of /nodes.json.
@@ -59,7 +57,7 @@ type OTAEntry struct {
 // attached to the meter). Returns an error if the node is missing.
 func (c *Client) FetchNode(ctx context.Context) (Node, error) {
 	url := fmt.Sprintf("http://%s/nodes.json", c.host)
-	body, err := c.fetchJSON(ctx, url)
+	body, err := c.get(ctx, url)
 	if err != nil {
 		return Node{}, err
 	}
@@ -79,7 +77,7 @@ func (c *Client) FetchNode(ctx context.Context) (Node, error) {
 // firmware versions, OTA flag).
 func (c *Client) FetchStatus(ctx context.Context) (Status, error) {
 	url := fmt.Sprintf("http://%s/status.json?timeout=0", c.host)
-	body, err := c.fetchJSON(ctx, url)
+	body, err := c.get(ctx, url)
 	if err != nil {
 		return Status{}, err
 	}
@@ -94,7 +92,7 @@ func (c *Client) FetchStatus(ctx context.Context) (Status, error) {
 // up2date flags tells whether any component has a pending firmware update.
 func (c *Client) FetchOTAManifest(ctx context.Context) ([]OTAEntry, error) {
 	url := fmt.Sprintf("http://%s/ota_manifest.json", c.host)
-	body, err := c.fetchJSON(ctx, url)
+	body, err := c.get(ctx, url)
 	if err != nil {
 		return nil, err
 	}
@@ -103,21 +101,4 @@ func (c *Client) FetchOTAManifest(ctx context.Context) ([]OTAEntry, error) {
 		return nil, fmt.Errorf("ota decode: %w", err)
 	}
 	return entries, nil
-}
-
-func (c *Client) fetchJSON(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.SetBasicAuth("admin", c.password)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("pulse %s: HTTP %d", url, resp.StatusCode)
-	}
-	return io.ReadAll(resp.Body)
 }
