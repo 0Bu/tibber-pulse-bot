@@ -115,6 +115,10 @@ docker run --rm \
 
 ## Run with docker-compose
 
+Compose runs the **published image** from GHCR, pinned by digest and kept
+current by Renovate. To build from source instead, use the
+[Run with Docker](#run-with-docker) section above.
+
 ```bash
 cp .env.example .env
 $EDITOR .env                 # fill in TIBBER_PULSE_*, MQTT_*
