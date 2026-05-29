@@ -18,6 +18,12 @@ env:
   # owner "0Bu" is mixed-case. Update if the repo is renamed/forked.
   IMAGE_NAME: 0bu/tibber-pulse-bot
 
+# Supersede in-progress runs for the same ref to save runner minutes, but
+# never cancel a tag (release) build mid-flight — only PR runs are coalesced.
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   vuln:
     runs-on: ubuntu-latest
@@ -60,9 +66,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4
-
+      # No QEMU: the Dockerfile cross-compiles the static Go binary on the
+      # native build platform, so no foreign-arch emulation is needed.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
 
