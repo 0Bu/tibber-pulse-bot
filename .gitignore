@@ -24,5 +24,6 @@ chart/charts/
 chart/Chart.lock
 *.tgz
 
-# Claude Code session artifacts
-.claude/
+# Claude Code session artifacts (but track shared skills)
+.claude/*
+!.claude/skills/
