@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	github.com/andig/gosml v0.0.0-20240713192035-e43c520ba0e3
-	github.com/coder/websocket v1.8.14
+	github.com/coder/websocket v1.8.15
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 )
 
