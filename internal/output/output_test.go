@@ -1,6 +1,10 @@
 package output
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/0Bu/tibber-pulse-bot/internal/pulse"
+)
 
 func TestFormatStatePayload(t *testing.T) {
 	tests := []struct {
@@ -13,7 +17,8 @@ func TestFormatStatePayload(t *testing.T) {
 		{"float64", 3.14159, "3.142"},
 		{"int", 42, "42"},
 		{"int64", int64(123), "123"},
-		{"unknown type skipped", "string", ""},
+		{"string verbatim", "1.2.3", "1.2.3"},
+		{"empty string skipped", "", ""},
 		{"nil skipped", nil, ""},
 	}
 	for _, tt := range tests {
@@ -22,6 +27,66 @@ func TestFormatStatePayload(t *testing.T) {
 				t.Errorf("formatStatePayload(%v) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBridgeState(t *testing.T) {
+	var st pulse.Status
+	st.PairingStatus = "PAIRED"
+	st.WiFi.IP = "192.168.1.5"
+	st.WiFi.SSID = "home"
+	st.WiFi.RSSI = -55
+	st.WiFi.Connected = true
+
+	u := BridgeUpdate{
+		Metrics: pulse.Metrics{
+			BatteryVoltage: 3.3, RadioTxPower: 14, MeterMode: 2,
+			ProductID: 7, NodeVersion: "n9",
+		},
+		Node: &pulse.Node{
+			NodeID: 1, EUI: "30FB10FFFE9326A9", Model: "node-efr32",
+			Version: "", Available: true, Paired: true, AverageRSSI: -70,
+		},
+		Status: &st,
+		OTA: []pulse.OTAEntry{
+			{Model: "tibber-pulse-ir-hub-esp32", OTAIndex: 0, CurrentVersion: "1.2", ManifestVersion: "1.3", Up2Date: false},
+		},
+	}
+	values, dyn := bridgeState(u)
+
+	// scalar fields from each source
+	for _, k := range []string{
+		"battery_voltage", "radio_tx_power", "meter_mode", "product_id", "node_version",
+		"node_id", "eui", "model", "available", "paired", "average_rssi",
+		"pairing_status", "wifi_ip", "wifi_ssid", "wifi_rssi", "wifi_connected",
+		"update_available",
+	} {
+		if _, ok := values[k]; !ok {
+			t.Errorf("missing key %q", k)
+		}
+	}
+	// empty string fields are dropped (Node.Version is "")
+	if _, ok := values["version"]; ok {
+		t.Error("empty string field 'version' should be dropped")
+	}
+	// integer identifiers stay int, not float64
+	if v, ok := values["product_id"].(int); !ok || v != 7 {
+		t.Errorf("product_id = %v (%T), want int 7", values["product_id"], values["product_id"])
+	}
+	// per-component OTA topics with dynamic discovery specs
+	cv := "ota_tibber_pulse_ir_hub_esp32_current_version"
+	ud := "ota_tibber_pulse_ir_hub_esp32_up2date"
+	if values[cv] != "1.2" {
+		t.Errorf("%s = %v, want 1.2", cv, values[cv])
+	}
+	if _, ok := dyn[cv]; !ok {
+		t.Errorf("missing dynamic spec for %q", cv)
+	}
+	if dyn[ud].Component != "binary_sensor" {
+		t.Errorf("%s component = %q, want binary_sensor", ud, dyn[ud].Component)
+	}
+	if values["update_available"] != true {
+		t.Error("update_available should be true when a component is out of date")
 	}
 }
 

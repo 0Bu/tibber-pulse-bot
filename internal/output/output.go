@@ -313,10 +313,10 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 		}
 	}
 
-	values := bridgeStateMap(u)
+	values, dyn := bridgeState(u)
 
 	if m.discoveryPrefix != "" {
-		m.announceBridge(values)
+		m.announceBridge(values, dyn)
 	}
 
 	for name, raw := range values {
@@ -337,7 +337,8 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 }
 
 // formatStatePayload renders bool → "ON"/"OFF" (HA binary_sensor default),
-// numeric → 3-decimal string, anything else → empty (skip publish).
+// numeric → 3-decimal/integer string, string → verbatim. An empty string (or
+// unknown type) yields "" so the caller skips publishing it.
 func formatStatePayload(v any) string {
 	switch x := v.(type) {
 	case bool:
@@ -351,54 +352,120 @@ func formatStatePayload(v any) string {
 		return fmt.Sprintf("%d", x)
 	case int64:
 		return fmt.Sprintf("%d", x)
+	case string:
+		return x
 	}
 	return ""
 }
 
-// bridgeStateMap merges metrics + node + status + OTA into one flat map
-// keyed by the same names that BridgeSensors uses for HA discovery.
-// Values are bool for binary sensors, float64/int for numeric ones.
-func bridgeStateMap(u BridgeUpdate) map[string]any {
+// bridgeState merges every decoded field from the four bridge endpoints into
+// one flat map keyed by the same names BridgeSensors uses for HA discovery.
+// Values are bool (binary_sensor), float64/int (numeric) or string (text).
+// The second return value holds discovery specs for the dynamically-named
+// per-OTA-component sensors, which can't live in the static BridgeSensors map
+// because their names embed the component model.
+//
+// Existing counter/measurement fields keep their float64 type so their MQTT
+// payloads (and HA history) are unchanged; only newly added integer
+// identifiers use int.
+func bridgeState(u BridgeUpdate) (map[string]any, map[string]discovery.SensorSpec) {
+	m := u.Metrics
 	out := map[string]any{
-		"battery_voltage":   u.Metrics.BatteryVoltage,
-		"temperature":       u.Metrics.Temperature,
-		"rssi":              u.Metrics.AvgRSSI,
-		"lqi":               u.Metrics.AvgLQI,
-		"uptime":            float64(u.Metrics.UptimeMS) / 1000.0,
-		"pkg_sent":          float64(u.Metrics.MeterPkgCountSent),
-		"pkg_received":      float64(u.Metrics.MeterPkgCountRecv),
-		"readings_received": float64(u.Metrics.MeterReadingCountRecv),
-		"corrupt_readings":  float64(u.Metrics.MeterCorruptCountRecv),
-		"invalid_readings":  float64(u.Metrics.InvalidMeterReadings),
+		"battery_voltage":            m.BatteryVoltage,
+		"temperature":                m.Temperature,
+		"rssi":                       m.AvgRSSI,
+		"lqi":                        m.AvgLQI,
+		"radio_tx_power":             m.RadioTxPower,
+		"uptime":                     float64(m.UptimeMS) / 1000.0,
+		"meter_msg_sent":             float64(m.MeterMsgCountSent),
+		"pkg_sent":                   float64(m.MeterPkgCountSent),
+		"pkg_received":               float64(m.MeterPkgCountRecv),
+		"readings_received":          float64(m.MeterReadingCountRecv),
+		"corrupt_readings":           float64(m.MeterCorruptCountRecv),
+		"invalid_readings":           float64(m.InvalidMeterReadings),
+		"compression_error_readings": float64(m.CompressionErrorReadings),
+		"meter_mode":                 m.MeterMode,
+		"bootloader_version":         m.BootloaderVersion,
+		"product_id":                 m.ProductID,
+		"node_version":               m.NodeVersion,
 	}
-	if u.Node != nil {
-		out["available"] = u.Node.Available
-		out["last_data_age"] = float64(u.Node.LastDataMS) / 1000.0
+	if n := u.Node; n != nil {
+		out["node_id"] = n.NodeID
+		out["eui"] = n.EUI
+		out["product_model"] = n.ProductModel
+		out["model"] = n.Model
+		out["version"] = n.Version
+		out["available"] = n.Available
+		out["paired"] = n.Paired
+		out["last_seen_age"] = float64(n.LastSeenMS) / 1000.0
+		out["last_data_age"] = float64(n.LastDataMS) / 1000.0
+		out["average_rssi"] = float64(n.AverageRSSI)
+		out["average_lqi"] = float64(n.AverageLQI)
+		out["ota_distribute_status"] = n.OTADistributeStatus
 	}
-	if u.Status != nil {
-		out["wifi_rssi"] = float64(u.Status.WiFi.RSSI)
-		out["cloud_mqtt"] = u.Status.MQTT.Connected
+	if s := u.Status; s != nil {
+		out["pairing_status"] = s.PairingStatus
+		out["bridge_uptime"] = float64(s.UpTime)
+		out["firmware_esp"] = s.Firmware.ESP
+		out["firmware_efr"] = s.Firmware.EFR
+		out["wifi_ip"] = s.WiFi.IP
+		out["wifi_ssid"] = s.WiFi.SSID
+		out["wifi_bssid"] = s.WiFi.BSSID
+		out["wifi_rssi"] = float64(s.WiFi.RSSI)
+		out["wifi_connected"] = s.WiFi.Connected
+		out["cloud_mqtt"] = s.MQTT.Connected
+		out["cloud_mqtt_subscribed"] = s.MQTT.Subscribed
+		out["ota_update_running"] = s.OTAUpdateRunning
 	}
+	dyn := map[string]discovery.SensorSpec{}
 	if len(u.OTA) > 0 {
-		// Aggregate: any component out of date → update available.
-		updateAvail := false
+		anyOutdated := false
 		for _, e := range u.OTA {
 			if !e.Up2Date {
-				updateAvail = true
-				break
+				anyOutdated = true
 			}
+			slug, label := otaKey(e)
+			cv := "ota_" + slug + "_current_version"
+			mv := "ota_" + slug + "_manifest_version"
+			ud := "ota_" + slug + "_up2date"
+			out[cv], out[mv], out[ud] = e.CurrentVersion, e.ManifestVersion, e.Up2Date
+			dyn[cv] = discovery.SensorSpec{FriendlyName: "OTA " + label + " Current Version"}
+			dyn[mv] = discovery.SensorSpec{FriendlyName: "OTA " + label + " Manifest Version"}
+			dyn[ud] = discovery.SensorSpec{FriendlyName: "OTA " + label + " Up To Date", Component: "binary_sensor"}
 		}
-		out["update_available"] = updateAvail
+		out["update_available"] = anyOutdated
 	}
-	return out
+	// Drop empty string fields so HA only gets an entity once a value exists
+	// (mirrors the lazy-announce behaviour for newly appearing sensors).
+	for k, v := range out {
+		if s, ok := v.(string); ok && s == "" {
+			delete(out, k)
+			delete(dyn, k)
+		}
+	}
+	return out, dyn
 }
 
-func (m *MQTTSink) announceBridge(values map[string]any) {
+// otaKey derives a topic-safe slug and a human label for one OTA component,
+// falling back to the numeric index when the model is empty so every
+// component still gets unique topics.
+func otaKey(e pulse.OTAEntry) (slug, label string) {
+	label = e.Model
+	if label == "" {
+		label = fmt.Sprintf("component %d", e.OTAIndex)
+	}
+	return discovery.Sanitize(label), label
+}
+
+func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discovery.SensorSpec) {
 	for name := range values {
 		if m.bridgeDiscovered[name] {
 			continue
 		}
 		spec, ok := discovery.BridgeSensors[name]
+		if !ok {
+			spec, ok = dyn[name]
+		}
 		if !ok {
 			continue
 		}
