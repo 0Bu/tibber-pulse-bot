@@ -286,7 +286,8 @@ type BridgeUpdate struct {
 // PublishBridgeUpdate publishes bridge metrics + node/status/OTA derived
 // values under <prefix>/bridge/<name>. On the first call after EUI is
 // known, retained HA discovery configs are emitted (or refreshed) for every
-// sensor that has metadata in discovery.BridgeSensors.
+// sensor with metadata in discovery.BridgeSensors plus the dynamically-named
+// per-OTA-component sensors carried in the dyn-spec map from bridgeState.
 func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 	if m.bridge.Host == "" {
 		return fmt.Errorf("bridge host not set")
@@ -375,7 +376,7 @@ func bridgeState(u BridgeUpdate) (map[string]any, map[string]discovery.SensorSpe
 		"temperature":                m.Temperature,
 		"rssi":                       m.AvgRSSI,
 		"lqi":                        m.AvgLQI,
-		"radio_tx_power":             m.RadioTxPower,
+		"radio_tx_power":             float64(m.RadioTxPower),
 		"uptime":                     float64(m.UptimeMS) / 1000.0,
 		"meter_msg_sent":             float64(m.MeterMsgCountSent),
 		"pkg_sent":                   float64(m.MeterPkgCountSent),
