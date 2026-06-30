@@ -34,6 +34,7 @@ func TestFormatStatePayload(t *testing.T) {
 func TestBridgeState(t *testing.T) {
 	var st pulse.Status
 	st.PairingStatus = "PAIRED"
+	st.UpTime = 12345 // 10ms ticks → 123.45 s
 	st.WiFi.IP = "192.168.1.5"
 	st.WiFi.SSID = "home"
 	st.WiFi.RSSI = -55
@@ -88,6 +89,10 @@ func TestBridgeState(t *testing.T) {
 	}
 	if values["update_available"] != true {
 		t.Error("update_available should be true when a component is out of date")
+	}
+	// bridge up_time is 10ms FreeRTOS ticks → seconds (÷100), not raw/ms
+	if v, ok := values["bridge_uptime"].(float64); !ok || v != 123.45 {
+		t.Errorf("bridge_uptime = %v (%T), want float64 123.45", values["bridge_uptime"], values["bridge_uptime"])
 	}
 }
 

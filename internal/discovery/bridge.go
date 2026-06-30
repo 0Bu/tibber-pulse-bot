@@ -36,11 +36,15 @@ func (b BridgeDevice) Identifier() string {
 // only for tests — production logic is map-iteration-order-agnostic.
 var BridgeSensors = map[string]SensorSpec{
 	// /metrics.json
-	"battery_voltage":            {"Battery Voltage", "voltage", "measurement", "V", ""},
-	"temperature":                {"Temperature", "temperature", "measurement", "°C", ""},
-	"rssi":                       {"Meter RSSI", "signal_strength", "measurement", "dBm", ""},
-	"lqi":                        {"Meter Link Quality", "", "measurement", "", ""},
-	"radio_tx_power":             {"Radio TX Power", "signal_strength", "measurement", "dBm", ""},
+	"battery_voltage": {"Battery Voltage", "voltage", "measurement", "V", ""},
+	"temperature":     {"Temperature", "temperature", "measurement", "°C", ""},
+	"rssi":            {"Meter RSSI", "signal_strength", "measurement", "dBm", ""},
+	"lqi":             {"Meter Link Quality", "", "measurement", "", ""},
+	// Raw EFR32 radio TX power figure (live bridge reports 67). Not a valid
+	// dBm signal_strength (those are negative RSSI); the true unit is most
+	// likely deci-dBm but unverifiable from a single sample, so we publish
+	// the raw value with no device_class/unit rather than mislabel it.
+	"radio_tx_power":             {"Radio TX Power", "", "measurement", "", ""},
 	"uptime":                     {"Node Uptime", "duration", "measurement", "s", ""},
 	"meter_msg_sent":             {"Meter Messages Sent", "", "total_increasing", "", ""},
 	"pkg_sent":                   {"Packets Sent", "", "total_increasing", "", ""},

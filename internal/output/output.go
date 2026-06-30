@@ -406,7 +406,10 @@ func bridgeState(u BridgeUpdate) (map[string]any, map[string]discovery.SensorSpe
 	}
 	if s := u.Status; s != nil {
 		out["pairing_status"] = s.PairingStatus
-		out["bridge_uptime"] = float64(s.UpTime)
+		// status up_time is in 10ms FreeRTOS ticks (ESP-IDF 100Hz default,
+		// measured at 100.15/s on the live bridge), NOT milliseconds like
+		// node_uptime_ms — ÷100 gives seconds for the duration sensor.
+		out["bridge_uptime"] = float64(s.UpTime) / 100.0
 		out["firmware_esp"] = s.Firmware.ESP
 		out["firmware_efr"] = s.Firmware.EFR
 		out["wifi_ip"] = s.WiFi.IP
