@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -165,10 +166,6 @@ type MQTTSink struct {
 	device           discovery.Device
 	bridge           discovery.BridgeDevice
 	bridgeDiscovered map[string]bool
-	// bridgeDynSpecs records the dynamically-named per-OTA-component specs we
-	// have announced (keyed by sensor name) so an EUI transition can sweep
-	// their retained discovery configs — they aren't in discovery.BridgeSensors.
-	bridgeDynSpecs map[string]discovery.SensorSpec
 }
 
 func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix string) (*MQTTSink, error) {
@@ -193,7 +190,6 @@ func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix s
 		discoveryPrefix:  strings.TrimRight(discoveryPrefix, "/"),
 		discovered:       map[string]bool{},
 		bridgeDiscovered: map[string]bool{},
-		bridgeDynSpecs:   map[string]discovery.SensorSpec{},
 	}, nil
 }
 
@@ -302,34 +298,27 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 		m.bridge.ESPVersion = u.Status.Firmware.ESP
 		m.bridge.EFRVersion = u.Status.Firmware.EFR
 	}
-	if u.Node != nil {
-		// Identifier transition: on the first EUI learn the old identity is
-		// the legacy IP-based one (v1.0.4); on a later EUI change (node
-		// hardware swapped behind the same host) it's the previous EUI. Either
-		// way, sweep the retained discovery configs published under the old
-		// identity (HA treats an empty retained payload as "remove device")
-		// before re-publishing under the new identifier — otherwise the old
-		// device card and its sensors orphan in HA.
-		if m.bridge.EUI != u.Node.EUI {
-			m.cleanupBridgeDiscovery(discovery.BridgeDevice{Host: m.bridge.Host, EUI: m.bridge.EUI})
-			m.bridge.EUI = u.Node.EUI
-			m.bridge.ProductModel = u.Node.ProductModel
-			m.bridge.NodeModel = u.Node.Model
-			m.bridgeDiscovered = map[string]bool{}
-			m.bridgeDynSpecs = map[string]discovery.SensorSpec{} // re-announced fresh under the new id
+	if u.Node != nil && m.bridge.EUI != u.Node.EUI {
+		// Identifier transition: on the first EUI learn the old identity is the
+		// legacy IP-based one (v1.0.4); on a later EUI change (node hardware
+		// swapped behind the same host) it's the previous EUI. Reconcile the
+		// retained discovery configs against the broker so stale ones — under
+		// the old identity, or left over from an earlier run under this identity
+		// (e.g. an OTA component that has since vanished) — are cleared, even
+		// across bot restarts. This runs once per session at first EUI learn.
+		oldDev := discovery.BridgeDevice{Host: m.bridge.Host, EUI: m.bridge.EUI}
+		m.bridge.EUI = u.Node.EUI
+		m.bridge.ProductModel = u.Node.ProductModel
+		m.bridge.NodeModel = u.Node.Model
+		m.bridgeDiscovered = map[string]bool{}
+		if m.discoveryPrefix != "" {
+			m.reconcileBridgeDiscovery(oldDev, u.OTA)
 		}
 	}
 
 	values, dyn := bridgeState(u)
 
 	if m.discoveryPrefix != "" {
-		// Reconcile per-OTA discovery only when we actually have manifest data
-		// this cycle. An empty u.OTA usually means a transient /ota_manifest.json
-		// fetch miss (the bridge drops the connection every 30–60s), not that
-		// every component vanished — GCing on that would flap the HA entities.
-		if len(u.OTA) > 0 {
-			m.gcVanishedBridgeDiscovery(dyn)
-		}
 		m.announceBridge(values, dyn)
 	}
 
@@ -441,25 +430,22 @@ func bridgeState(u BridgeUpdate) (map[string]any, map[string]discovery.SensorSpe
 			if !e.Up2Date {
 				anyOutdated = true
 			}
-			slug, label := otaKey(e)
-			cv := "ota_" + slug + "_current_version"
-			mv := "ota_" + slug + "_manifest_version"
-			ud := "ota_" + slug + "_up2date"
-			out[cv], out[mv], out[ud] = e.CurrentVersion, e.ManifestVersion, e.Up2Date
-			dyn[cv] = discovery.SensorSpec{FriendlyName: "OTA " + label + " Current Version"}
-			dyn[mv] = discovery.SensorSpec{FriendlyName: "OTA " + label + " Manifest Version"}
-			dyn[ud] = discovery.SensorSpec{FriendlyName: "OTA " + label + " Up To Date", Component: "binary_sensor"}
+			for _, s := range otaSensors(e) {
+				out[s.name] = s.value
+				dyn[s.name] = s.spec
+			}
 		}
 		out["update_available"] = anyOutdated
 	}
-	// Drop empty string fields from out so HA only gets a state once a value
-	// exists (lazy announce). Keep them in dyn: dyn is the authoritative set of
-	// the current OTA components, used by gcVanishedBridgeDiscovery to tell a
-	// genuinely-removed component apart from one whose version field merely
-	// blipped empty this cycle (which would otherwise flap the HA entity).
+	// Drop empty string fields so HA only gets an entity once a value exists
+	// (lazy announce). Removal of components that genuinely vanish is handled
+	// out-of-band against the broker (see reconcileBridgeDiscovery), not by
+	// per-cycle diffing here — that previously flapped entities on transient
+	// empty-version blips.
 	for k, v := range out {
 		if s, ok := v.(string); ok && s == "" {
 			delete(out, k)
+			delete(dyn, k)
 		}
 	}
 	return out, dyn
@@ -482,6 +468,26 @@ func otaKey(e pulse.OTAEntry) (slug, label string) {
 	return slug, label
 }
 
+// otaSensor is one dynamically-named per-OTA-component sensor: its bridge
+// topic-suffix name, HA discovery spec, and current value.
+type otaSensor struct {
+	name  string
+	spec  discovery.SensorSpec
+	value any
+}
+
+// otaSensors is the single source of truth for the per-component topic names,
+// so bridgeState (values + specs) and desiredBridgeTopics (reconcile) derive
+// the exact same set and can't drift apart.
+func otaSensors(e pulse.OTAEntry) []otaSensor {
+	slug, label := otaKey(e)
+	return []otaSensor{
+		{"ota_" + slug + "_current_version", discovery.SensorSpec{FriendlyName: "OTA " + label + " Current Version"}, e.CurrentVersion},
+		{"ota_" + slug + "_manifest_version", discovery.SensorSpec{FriendlyName: "OTA " + label + " Manifest Version"}, e.ManifestVersion},
+		{"ota_" + slug + "_up2date", discovery.SensorSpec{FriendlyName: "OTA " + label + " Up To Date", Component: "binary_sensor"}, e.Up2Date},
+	}
+}
+
 func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discovery.SensorSpec) {
 	for name := range values {
 		if m.bridgeDiscovered[name] {
@@ -489,9 +495,7 @@ func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discover
 		}
 		spec, ok := discovery.BridgeSensors[name]
 		if !ok {
-			if spec, ok = dyn[name]; ok {
-				m.bridgeDynSpecs[name] = spec
-			}
+			spec, ok = dyn[name]
 		}
 		if !ok {
 			continue
@@ -510,47 +514,136 @@ func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discover
 	}
 }
 
-// cleanupBridgeDiscovery sweeps the retained discovery configs published
-// under oldDev's identifier by publishing empty retained payloads, so HA
-// garbage collects the orphan device card. Called on every identifier
-// transition: the first EUI learn (oldDev is the legacy IP-based identity
-// from v1.0.4) and any later EUI change (oldDev is the previous EUI).
-// Covers both the static BridgeSensors and the dynamically-named per-OTA
-// sensors we announced. Best-effort — failures are ignored.
-func (m *MQTTSink) cleanupBridgeDiscovery(oldDev discovery.BridgeDevice) {
-	if m.discoveryPrefix == "" {
-		return // discovery off → no retained configs were ever published
-	}
-	for name, spec := range discovery.BridgeSensors {
-		m.clearBridgeConfig(name, spec, oldDev)
-	}
-	for name, spec := range m.bridgeDynSpecs {
-		m.clearBridgeConfig(name, spec, oldDev)
+// reconcileBridgeDiscovery reads the retained bridge discovery configs from
+// the broker — the durable source of truth that survives bot restarts, which
+// an in-memory record would not — and clears the stale ones: configs under the
+// previous identifier (oldDev), and configs under the current identifier that
+// are no longer desired (e.g. a per-OTA-component sensor left over from an
+// earlier run whose component has since vanished or whose slug changed).
+// Scoped to our own identifiers, so it is safe when other devices share the
+// discovery prefix. Best-effort — broker errors just skip the sweep.
+func (m *MQTTSink) reconcileBridgeDiscovery(oldDev discovery.BridgeDevice, ota []pulse.OTAEntry) {
+	observed := m.enumerateRetainedConfigs()
+	desired := m.desiredBridgeTopics(ota)
+	// Only trust "current-id config not desired → remove" when the manifest was
+	// actually fetched this cycle (len(ota) > 0); an empty u.OTA is usually a
+	// transient fetch miss, and clearing on it would briefly drop live entities.
+	for _, topic := range staleBridgeConfigs(observed, desired, m.discoveryPrefix, oldDev.Identifier(), m.bridge.Identifier(), len(ota) > 0) {
+		_ = m.client.Publish(topic, 0, true, "")
 	}
 }
 
-// gcVanishedBridgeDiscovery clears the retained discovery config for any
-// dynamically-named per-OTA-component sensor we previously announced whose
-// component is no longer present in current — the full set of dynamic sensor
-// names for this cycle's manifest. A component dropped from the manifest, or
-// whose slug changed (empty→real model, reordered indices), is reconciled; a
-// component that is still present but whose version field blipped empty is not
-// (its name remains in current). The caller only invokes this when manifest
-// data was actually fetched, so a transient fetch miss can't wipe the entities.
-func (m *MQTTSink) gcVanishedBridgeDiscovery(current map[string]discovery.SensorSpec) {
-	for name, spec := range m.bridgeDynSpecs {
-		if _, present := current[name]; present {
+// desiredBridgeTopics is the set of discovery config topics that should exist
+// under the current identifier this cycle: every static BridgeSensors entry
+// plus the per-component OTA sensors for the current manifest.
+func (m *MQTTSink) desiredBridgeTopics(ota []pulse.OTAEntry) map[string]struct{} {
+	d := make(map[string]struct{})
+	for name, spec := range discovery.BridgeSensors {
+		d[discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, m.bridge)] = struct{}{}
+	}
+	for _, e := range ota {
+		for _, s := range otaSensors(e) {
+			d[discovery.BridgeConfigTopic(m.discoveryPrefix, s.name, s.spec, m.bridge)] = struct{}{}
+		}
+	}
+	return d
+}
+
+// staleBridgeConfigs returns the observed config topics to clear: those under
+// our previous identifier (oldID, the departed identity — always swept), plus,
+// when curIDComplete is true, those under the current identifier (curID) that
+// aren't desired. Topics under any other identifier — which on a shared broker
+// may belong to a different bridge — are left untouched. Pure.
+func staleBridgeConfigs(observed, desired map[string]struct{}, discoveryPrefix, oldID, curID string, curIDComplete bool) []string {
+	var stale []string
+	for topic := range observed {
+		if _, want := desired[topic]; want {
 			continue
 		}
-		m.clearBridgeConfig(name, spec, m.bridge)
-		delete(m.bridgeDynSpecs, name)
-		delete(m.bridgeDiscovered, name)
+		oid, ok := bridgeObjectID(topic, discoveryPrefix)
+		if !ok {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(oid, oldID+"_"):
+			stale = append(stale, topic)
+		case curIDComplete && strings.HasPrefix(oid, curID+"_"):
+			stale = append(stale, topic)
+		}
 	}
+	return stale
 }
 
-// clearBridgeConfig removes a bridge sensor's HA discovery entity by writing
-// an empty retained payload to its config topic under dev's identifier.
-func (m *MQTTSink) clearBridgeConfig(name string, spec discovery.SensorSpec, dev discovery.BridgeDevice) {
-	topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, dev)
-	_ = m.client.Publish(topic, 0, true, "")
+// bridgeObjectID extracts the HA object_id from a discovery config topic of the
+// form <prefix>/<component>/<object_id>/config and reports whether it belongs
+// to a bridge sensor (object_id prefix "tibber-pulse-bridge-"). Meter configs
+// (object_id "tibber-pulse-<serial>_...") and non-config topics are rejected.
+func bridgeObjectID(topic, discoveryPrefix string) (string, bool) {
+	if !strings.HasPrefix(topic, discoveryPrefix+"/") || !strings.HasSuffix(topic, "/config") {
+		return "", false
+	}
+	mid := topic[len(discoveryPrefix)+1 : len(topic)-len("/config")]
+	i := strings.LastIndex(mid, "/")
+	if i < 0 {
+		return "", false
+	}
+	oid := mid[i+1:]
+	if !strings.HasPrefix(oid, "tibber-pulse-bridge-") {
+		return "", false
+	}
+	return oid, true
+}
+
+// enumerateRetainedConfigs subscribes to the HA discovery config topics and
+// collects the non-empty bridge configs the broker replays from its retained
+// store. MQTT has no end-of-retained signal, so it collects until a short
+// quiet window elapses (hard-capped). Best-effort: a subscribe failure yields
+// an empty set, so the reconcile simply clears nothing.
+func (m *MQTTSink) enumerateRetainedConfigs() map[string]struct{} {
+	found := make(map[string]struct{})
+	var mu sync.Mutex
+	activity := make(chan struct{}, 1024)
+	filter := m.discoveryPrefix + "/+/+/config"
+	tok := m.client.Subscribe(filter, 0, func(_ mqtt.Client, msg mqtt.Message) {
+		if len(msg.Payload()) == 0 {
+			return // already-cleared config
+		}
+		if _, ok := bridgeObjectID(msg.Topic(), m.discoveryPrefix); ok {
+			mu.Lock()
+			found[msg.Topic()] = struct{}{}
+			mu.Unlock()
+		}
+		select {
+		case activity <- struct{}{}:
+		default:
+		}
+	})
+	if !tok.WaitTimeout(5*time.Second) || tok.Error() != nil {
+		m.client.Unsubscribe(filter)
+		return found
+	}
+	deadline := time.After(3 * time.Second)
+	quiet := time.NewTimer(500 * time.Millisecond)
+	defer quiet.Stop()
+	for done := false; !done; {
+		select {
+		case <-activity:
+			if !quiet.Stop() {
+				<-quiet.C
+			}
+			quiet.Reset(500 * time.Millisecond)
+		case <-quiet.C:
+			done = true
+		case <-deadline:
+			done = true
+		}
+	}
+	m.client.Unsubscribe(filter)
+	mu.Lock()
+	defer mu.Unlock()
+	out := make(map[string]struct{}, len(found))
+	for k := range found {
+		out[k] = struct{}{}
+	}
+	return out
 }

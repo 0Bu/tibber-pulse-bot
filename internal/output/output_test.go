@@ -124,23 +124,78 @@ func TestBridgeStateOTAIndexDisambiguates(t *testing.T) {
 	}
 }
 
-// TestBridgeStateKeepsDynSpecForEmptyVersion guards the OTA-flap regression:
-// a present component whose version field is empty is dropped from the state
-// map (lazy announce) but must stay in the dyn spec set, so the GC that keys
-// off dyn doesn't mistake an empty-version blip for a removed component.
-func TestBridgeStateKeepsDynSpecForEmptyVersion(t *testing.T) {
-	u := BridgeUpdate{
-		OTA: []pulse.OTAEntry{
-			{Model: "efr32", OTAIndex: 1, CurrentVersion: "1.0", ManifestVersion: ""},
-		},
+// TestBridgeObjectID covers parsing the HA object_id out of a discovery config
+// topic and rejecting non-bridge / non-config topics.
+func TestBridgeObjectID(t *testing.T) {
+	cases := []struct {
+		topic, prefix, wantID string
+		wantOK                bool
+	}{
+		{"homeassistant/sensor/tibber-pulse-bridge-abc_rssi/config", "homeassistant", "tibber-pulse-bridge-abc_rssi", true},
+		{"homeassistant/binary_sensor/tibber-pulse-bridge-abc_available/config", "homeassistant", "tibber-pulse-bridge-abc_available", true},
+		{"homeassistant/sensor/tibber-pulse-lgz_81199038_power_total/config", "homeassistant", "", false}, // meter, not bridge
+		{"homeassistant/sensor/tibber-pulse-bridge-abc_rssi/state", "homeassistant", "", false},           // not a config topic
+		{"ha/discovery/sensor/tibber-pulse-bridge-x_rssi/config", "ha/discovery", "tibber-pulse-bridge-x_rssi", true},
 	}
-	values, dyn := bridgeState(u)
-	mv := "ota_1_efr32_manifest_version"
-	if _, inValues := values[mv]; inValues {
-		t.Errorf("%s should be dropped from values when empty", mv)
+	for _, c := range cases {
+		got, ok := bridgeObjectID(c.topic, c.prefix)
+		if ok != c.wantOK || got != c.wantID {
+			t.Errorf("bridgeObjectID(%q,%q) = (%q,%v), want (%q,%v)", c.topic, c.prefix, got, ok, c.wantID, c.wantOK)
+		}
 	}
-	if _, inDyn := dyn[mv]; !inDyn {
-		t.Errorf("%s must stay in dyn so GC treats the component as present", mv)
+}
+
+// TestStaleBridgeConfigs covers the reconcile decision: clear old-identity and
+// current-but-undesired configs, never a desired one, another bridge's, or a
+// meter config.
+func TestStaleBridgeConfigs(t *testing.T) {
+	const prefix = "homeassistant"
+	const oldID = "tibber-pulse-bridge-192_168_1_5" // host-based legacy id
+	const curID = "tibber-pulse-bridge-30fb10fffe9326a9"
+	topic := func(comp, oid string) string { return prefix + "/" + comp + "/" + oid + "/config" }
+
+	desiredKeep := topic("sensor", curID+"_battery_voltage")
+	curStale := topic("sensor", curID+"_ota_9_gone_current_version")
+	oldLegacy := topic("sensor", oldID+"_temperature")
+	otherBridge := topic("sensor", "tibber-pulse-bridge-deadbeef_battery_voltage")
+	meterConfig := topic("sensor", "tibber-pulse-lgz_81199038_power_total")
+
+	observed := map[string]struct{}{
+		desiredKeep: {}, curStale: {}, oldLegacy: {}, otherBridge: {}, meterConfig: {},
+	}
+	desired := map[string]struct{}{desiredKeep: {}}
+
+	cleared := map[string]bool{}
+	for _, tpc := range staleBridgeConfigs(observed, desired, prefix, oldID, curID, true) {
+		cleared[tpc] = true
+	}
+	if !cleared[curStale] {
+		t.Errorf("should clear stale current-id config %s", curStale)
+	}
+	if !cleared[oldLegacy] {
+		t.Errorf("should clear old-identity config %s", oldLegacy)
+	}
+	if cleared[desiredKeep] {
+		t.Error("must not clear a desired config")
+	}
+	if cleared[otherBridge] {
+		t.Error("must not clear another bridge's config")
+	}
+	if cleared[meterConfig] {
+		t.Error("must not clear a meter config")
+	}
+
+	// With curIDComplete=false (manifest not fetched this cycle), current-id
+	// configs are left alone, but the departed identity is still swept.
+	cleared = map[string]bool{}
+	for _, tpc := range staleBridgeConfigs(observed, desired, prefix, oldID, curID, false) {
+		cleared[tpc] = true
+	}
+	if cleared[curStale] {
+		t.Error("must not clear current-id config when manifest is incomplete")
+	}
+	if !cleared[oldLegacy] {
+		t.Error("old-identity sweep must run regardless of manifest completeness")
 	}
 }
 
