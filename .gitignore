@@ -24,5 +24,8 @@ chart/charts/
 chart/Chart.lock
 *.tgz
 
-# Claude Code session artifacts
-.claude/
+# Claude Code — ignore local/session artifacts, track shared config
+.claude/*
+!.claude/settings.json
+!.claude/skills/
+!.claude/agents/

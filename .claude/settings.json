@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$(basename \"$f\")\" in .env.example|.env.sample) exit 0;; .env|.env.*) echo \"Blocked: $f may contain the bridge password (see CLAUDE.md > Security). Edit .env.example instead.\" >&2; exit 2;; esac; exit 0"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.go) command -v gofmt >/dev/null 2>&1 && gofmt -w \"$f\";; esac; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}
