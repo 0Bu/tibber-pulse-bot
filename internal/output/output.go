@@ -303,15 +303,15 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 		m.bridge.EFRVersion = u.Status.Firmware.EFR
 	}
 	if u.Node != nil {
-		// EUI transition: clear the legacy IP-based discovery topics from
-		// v1.0.4 (HA picks up empty retained payload as "remove device"),
-		// then re-publish under the new EUI-based identifier.
+		// Identifier transition: on the first EUI learn the old identity is
+		// the legacy IP-based one (v1.0.4); on a later EUI change (node
+		// hardware swapped behind the same host) it's the previous EUI. Either
+		// way, sweep the retained discovery configs published under the old
+		// identity (HA treats an empty retained payload as "remove device")
+		// before re-publishing under the new identifier — otherwise the old
+		// device card and its sensors orphan in HA.
 		if m.bridge.EUI != u.Node.EUI {
-			if m.bridge.EUI == "" {
-				// First time we learn the EUI — always best-effort sweep
-				// of legacy IP-based topics, idempotent if nothing's there.
-				m.cleanupOldBridgeDiscovery()
-			}
+			m.cleanupBridgeDiscovery(discovery.BridgeDevice{Host: m.bridge.Host, EUI: m.bridge.EUI})
 			m.bridge.EUI = u.Node.EUI
 			m.bridge.ProductModel = u.Node.ProductModel
 			m.bridge.NodeModel = u.Node.Model
@@ -322,6 +322,7 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 	values, dyn := bridgeState(u)
 
 	if m.discoveryPrefix != "" {
+		m.gcVanishedBridgeDiscovery(values)
 		m.announceBridge(values, dyn)
 	}
 
@@ -500,23 +501,41 @@ func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discover
 	}
 }
 
-// cleanupOldBridgeDiscovery is called once when we transition from an
-// IP-based bridge identifier (v1.0.4) to an EUI-based one (v1.0.5+). It
-// publishes empty retained payloads to the legacy topics so HA garbage
-// collects the orphan device card. Best-effort — failures are ignored.
-func (m *MQTTSink) cleanupOldBridgeDiscovery() {
+// cleanupBridgeDiscovery sweeps the retained discovery configs published
+// under oldDev's identifier by publishing empty retained payloads, so HA
+// garbage collects the orphan device card. Called on every identifier
+// transition: the first EUI learn (oldDev is the legacy IP-based identity
+// from v1.0.4) and any later EUI change (oldDev is the previous EUI).
+// Covers both the static BridgeSensors and the dynamically-named per-OTA
+// sensors we announced. Best-effort — failures are ignored.
+func (m *MQTTSink) cleanupBridgeDiscovery(oldDev discovery.BridgeDevice) {
 	if m.discoveryPrefix == "" {
 		return // discovery off → no retained configs were ever published
 	}
-	oldDev := discovery.BridgeDevice{Host: m.bridge.Host} // EUI empty → IP-based
 	for name, spec := range discovery.BridgeSensors {
 		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, oldDev)
 		_ = m.client.Publish(topic, 0, true, "")
 	}
-	// Per-OTA-component configs are dynamically named and absent from
-	// BridgeSensors; sweep the ones we actually announced under the old id.
 	for name, spec := range m.bridgeDynSpecs {
 		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, oldDev)
 		_ = m.client.Publish(topic, 0, true, "")
+	}
+}
+
+// gcVanishedBridgeDiscovery clears the retained discovery config for any
+// dynamically-named per-OTA-component sensor we previously announced under
+// the current identifier but that is absent from this update — a component
+// dropped from the manifest, or its slug changed (model went from empty to a
+// real string, or indices reordered). Without this the stale HA entity would
+// live forever. Static sensors never vanish, so only the dyn set is checked.
+func (m *MQTTSink) gcVanishedBridgeDiscovery(values map[string]any) {
+	for name, spec := range m.bridgeDynSpecs {
+		if _, present := values[name]; present {
+			continue
+		}
+		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, m.bridge)
+		_ = m.client.Publish(topic, 0, true, "")
+		delete(m.bridgeDynSpecs, name)
+		delete(m.bridgeDiscovered, name)
 	}
 }
