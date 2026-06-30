@@ -44,6 +44,7 @@ func TestBridgeState(t *testing.T) {
 		Metrics: pulse.Metrics{
 			BatteryVoltage: 3.3, RadioTxPower: 14, MeterMode: 2,
 			ProductID: 7, NodeVersion: "n9",
+			MeterMsgCountSent: 42, CompressionErrorReadings: 3,
 		},
 		Node: &pulse.Node{
 			NodeID: 1, EUI: "30FB10FFFE9326A9", Model: "node-efr32",
@@ -74,6 +75,13 @@ func TestBridgeState(t *testing.T) {
 	// integer identifiers stay int, not float64
 	if v, ok := values["product_id"].(int); !ok || v != 7 {
 		t.Errorf("product_id = %v (%T), want int 7", values["product_id"], values["product_id"])
+	}
+	// newly added integer counters render as int ("42"), not float64 ("42.000")
+	if v, ok := values["meter_msg_sent"].(int); !ok || v != 42 {
+		t.Errorf("meter_msg_sent = %v (%T), want int 42", values["meter_msg_sent"], values["meter_msg_sent"])
+	}
+	if v, ok := values["compression_error_readings"].(int); !ok || v != 3 {
+		t.Errorf("compression_error_readings = %v (%T), want int 3", values["compression_error_readings"], values["compression_error_readings"])
 	}
 	// per-component OTA topics with dynamic discovery specs; the slug is
 	// prefixed with the OTAIndex (0 here) to avoid same-model collisions.

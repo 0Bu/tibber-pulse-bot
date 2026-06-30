@@ -372,9 +372,9 @@ func formatStatePayload(v any) string {
 // per-OTA-component sensors, which can't live in the static BridgeSensors map
 // because their names embed the component model.
 //
-// Existing counter/measurement fields keep their float64 type so their MQTT
-// payloads (and HA history) are unchanged; only newly added integer
-// identifiers use int.
+// The pre-existing counter/measurement fields keep their float64 type so
+// their MQTT payloads (and HA history) are unchanged; newly added integer
+// counters and identifiers use int so they render as "42", not "42.000".
 func bridgeState(u BridgeUpdate) (map[string]any, map[string]discovery.SensorSpec) {
 	m := u.Metrics
 	out := map[string]any{
@@ -384,13 +384,13 @@ func bridgeState(u BridgeUpdate) (map[string]any, map[string]discovery.SensorSpe
 		"lqi":                        m.AvgLQI,
 		"radio_tx_power":             float64(m.RadioTxPower),
 		"uptime":                     float64(m.UptimeMS) / 1000.0,
-		"meter_msg_sent":             float64(m.MeterMsgCountSent),
+		"meter_msg_sent":             m.MeterMsgCountSent,
 		"pkg_sent":                   float64(m.MeterPkgCountSent),
 		"pkg_received":               float64(m.MeterPkgCountRecv),
 		"readings_received":          float64(m.MeterReadingCountRecv),
 		"corrupt_readings":           float64(m.MeterCorruptCountRecv),
 		"invalid_readings":           float64(m.InvalidMeterReadings),
-		"compression_error_readings": float64(m.CompressionErrorReadings),
+		"compression_error_readings": m.CompressionErrorReadings,
 		"meter_mode":                 m.MeterMode,
 		"bootloader_version":         m.BootloaderVersion,
 		"product_id":                 m.ProductID,
