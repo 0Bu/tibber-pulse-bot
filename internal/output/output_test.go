@@ -124,6 +124,26 @@ func TestBridgeStateOTAIndexDisambiguates(t *testing.T) {
 	}
 }
 
+// TestBridgeStateKeepsDynSpecForEmptyVersion guards the OTA-flap regression:
+// a present component whose version field is empty is dropped from the state
+// map (lazy announce) but must stay in the dyn spec set, so the GC that keys
+// off dyn doesn't mistake an empty-version blip for a removed component.
+func TestBridgeStateKeepsDynSpecForEmptyVersion(t *testing.T) {
+	u := BridgeUpdate{
+		OTA: []pulse.OTAEntry{
+			{Model: "efr32", OTAIndex: 1, CurrentVersion: "1.0", ManifestVersion: ""},
+		},
+	}
+	values, dyn := bridgeState(u)
+	mv := "ota_1_efr32_manifest_version"
+	if _, inValues := values[mv]; inValues {
+		t.Errorf("%s should be dropped from values when empty", mv)
+	}
+	if _, inDyn := dyn[mv]; !inDyn {
+		t.Errorf("%s must stay in dyn so GC treats the component as present", mv)
+	}
+}
+
 // TestBridgeStateHasDiscoverySpecs is the bridge-side counterpart of
 // internal/sml.TestObisNamesHaveDiscoverySpecs: every field bridgeState can
 // emit must have HA discovery metadata, either a static entry in

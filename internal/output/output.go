@@ -316,13 +316,20 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 			m.bridge.ProductModel = u.Node.ProductModel
 			m.bridge.NodeModel = u.Node.Model
 			m.bridgeDiscovered = map[string]bool{}
+			m.bridgeDynSpecs = map[string]discovery.SensorSpec{} // re-announced fresh under the new id
 		}
 	}
 
 	values, dyn := bridgeState(u)
 
 	if m.discoveryPrefix != "" {
-		m.gcVanishedBridgeDiscovery(values)
+		// Reconcile per-OTA discovery only when we actually have manifest data
+		// this cycle. An empty u.OTA usually means a transient /ota_manifest.json
+		// fetch miss (the bridge drops the connection every 30–60s), not that
+		// every component vanished — GCing on that would flap the HA entities.
+		if len(u.OTA) > 0 {
+			m.gcVanishedBridgeDiscovery(dyn)
+		}
 		m.announceBridge(values, dyn)
 	}
 
@@ -445,12 +452,14 @@ func bridgeState(u BridgeUpdate) (map[string]any, map[string]discovery.SensorSpe
 		}
 		out["update_available"] = anyOutdated
 	}
-	// Drop empty string fields so HA only gets an entity once a value exists
-	// (mirrors the lazy-announce behaviour for newly appearing sensors).
+	// Drop empty string fields from out so HA only gets a state once a value
+	// exists (lazy announce). Keep them in dyn: dyn is the authoritative set of
+	// the current OTA components, used by gcVanishedBridgeDiscovery to tell a
+	// genuinely-removed component apart from one whose version field merely
+	// blipped empty this cycle (which would otherwise flap the HA entity).
 	for k, v := range out {
 		if s, ok := v.(string); ok && s == "" {
 			delete(out, k)
-			delete(dyn, k)
 		}
 	}
 	return out, dyn
@@ -513,29 +522,35 @@ func (m *MQTTSink) cleanupBridgeDiscovery(oldDev discovery.BridgeDevice) {
 		return // discovery off → no retained configs were ever published
 	}
 	for name, spec := range discovery.BridgeSensors {
-		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, oldDev)
-		_ = m.client.Publish(topic, 0, true, "")
+		m.clearBridgeConfig(name, spec, oldDev)
 	}
 	for name, spec := range m.bridgeDynSpecs {
-		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, oldDev)
-		_ = m.client.Publish(topic, 0, true, "")
+		m.clearBridgeConfig(name, spec, oldDev)
 	}
 }
 
 // gcVanishedBridgeDiscovery clears the retained discovery config for any
-// dynamically-named per-OTA-component sensor we previously announced under
-// the current identifier but that is absent from this update — a component
-// dropped from the manifest, or its slug changed (model went from empty to a
-// real string, or indices reordered). Without this the stale HA entity would
-// live forever. Static sensors never vanish, so only the dyn set is checked.
-func (m *MQTTSink) gcVanishedBridgeDiscovery(values map[string]any) {
+// dynamically-named per-OTA-component sensor we previously announced whose
+// component is no longer present in current — the full set of dynamic sensor
+// names for this cycle's manifest. A component dropped from the manifest, or
+// whose slug changed (empty→real model, reordered indices), is reconciled; a
+// component that is still present but whose version field blipped empty is not
+// (its name remains in current). The caller only invokes this when manifest
+// data was actually fetched, so a transient fetch miss can't wipe the entities.
+func (m *MQTTSink) gcVanishedBridgeDiscovery(current map[string]discovery.SensorSpec) {
 	for name, spec := range m.bridgeDynSpecs {
-		if _, present := values[name]; present {
+		if _, present := current[name]; present {
 			continue
 		}
-		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, m.bridge)
-		_ = m.client.Publish(topic, 0, true, "")
+		m.clearBridgeConfig(name, spec, m.bridge)
 		delete(m.bridgeDynSpecs, name)
 		delete(m.bridgeDiscovered, name)
 	}
+}
+
+// clearBridgeConfig removes a bridge sensor's HA discovery entity by writing
+// an empty retained payload to its config topic under dev's identifier.
+func (m *MQTTSink) clearBridgeConfig(name string, spec discovery.SensorSpec, dev discovery.BridgeDevice) {
+	topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, dev)
+	_ = m.client.Publish(topic, 0, true, "")
 }
