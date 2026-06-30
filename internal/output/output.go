@@ -165,6 +165,10 @@ type MQTTSink struct {
 	device           discovery.Device
 	bridge           discovery.BridgeDevice
 	bridgeDiscovered map[string]bool
+	// bridgeDynSpecs records the dynamically-named per-OTA-component specs we
+	// have announced (keyed by sensor name) so an EUI transition can sweep
+	// their retained discovery configs — they aren't in discovery.BridgeSensors.
+	bridgeDynSpecs map[string]discovery.SensorSpec
 }
 
 func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix string) (*MQTTSink, error) {
@@ -189,6 +193,7 @@ func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix s
 		discoveryPrefix:  strings.TrimRight(discoveryPrefix, "/"),
 		discovered:       map[string]bool{},
 		bridgeDiscovered: map[string]bool{},
+		bridgeDynSpecs:   map[string]discovery.SensorSpec{},
 	}, nil
 }
 
@@ -450,15 +455,21 @@ func bridgeState(u BridgeUpdate) (map[string]any, map[string]discovery.SensorSpe
 	return out, dyn
 }
 
-// otaKey derives a topic-safe slug and a human label for one OTA component,
-// falling back to the numeric index when the model is empty so every
-// component still gets unique topics.
+// otaKey derives a topic-safe slug and a human label for one OTA component.
+// The slug is prefixed with the component's OTAIndex so two entries sharing
+// (or sanitizing to) the same model can't collide onto one topic and silently
+// overwrite each other's value and discovery spec.
 func otaKey(e pulse.OTAEntry) (slug, label string) {
 	label = e.Model
 	if label == "" {
 		label = fmt.Sprintf("component %d", e.OTAIndex)
 	}
-	return discovery.Sanitize(label), label
+	if s := discovery.Sanitize(e.Model); s != "" {
+		slug = fmt.Sprintf("%d_%s", e.OTAIndex, s)
+	} else {
+		slug = fmt.Sprintf("%d", e.OTAIndex)
+	}
+	return slug, label
 }
 
 func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discovery.SensorSpec) {
@@ -468,7 +479,9 @@ func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discover
 		}
 		spec, ok := discovery.BridgeSensors[name]
 		if !ok {
-			spec, ok = dyn[name]
+			if spec, ok = dyn[name]; ok {
+				m.bridgeDynSpecs[name] = spec
+			}
 		}
 		if !ok {
 			continue
@@ -492,8 +505,17 @@ func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discover
 // publishes empty retained payloads to the legacy topics so HA garbage
 // collects the orphan device card. Best-effort — failures are ignored.
 func (m *MQTTSink) cleanupOldBridgeDiscovery() {
+	if m.discoveryPrefix == "" {
+		return // discovery off → no retained configs were ever published
+	}
 	oldDev := discovery.BridgeDevice{Host: m.bridge.Host} // EUI empty → IP-based
 	for name, spec := range discovery.BridgeSensors {
+		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, oldDev)
+		_ = m.client.Publish(topic, 0, true, "")
+	}
+	// Per-OTA-component configs are dynamically named and absent from
+	// BridgeSensors; sweep the ones we actually announced under the old id.
+	for name, spec := range m.bridgeDynSpecs {
 		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, oldDev)
 		_ = m.client.Publish(topic, 0, true, "")
 	}

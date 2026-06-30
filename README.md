@@ -240,7 +240,7 @@ announced to HA) once they carry a non-empty value.
 | status.json | `pairing_status`, `firmware_esp`, `firmware_efr`, `wifi_ip`, `wifi_ssid`, `wifi_bssid` | text |
 | status.json | `wifi_connected`, `cloud_mqtt` (Tibber cloud connection), `cloud_mqtt_subscribed`, `ota_update_running` | binary `ON`/`OFF` |
 | ota_manifest.json | `update_available` (any component out of date) | binary `ON`/`OFF` |
-| ota_manifest.json | per component `ota_<model>_current_version`, `ota_<model>_manifest_version` (text), `ota_<model>_up2date` (binary) | text / binary |
+| ota_manifest.json | per component `ota_<index>_<model>_current_version`, `ota_<index>_<model>_manifest_version` (text), `ota_<index>_<model>_up2date` (binary) | text / binary |
 
 With `--ha-discovery` they appear as a separate **Tibber Pulse Bridge
 \<EUI\>** device in HA. The bridge device card shows both ESP32 hub and

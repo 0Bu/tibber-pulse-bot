@@ -75,9 +75,10 @@ func TestBridgeState(t *testing.T) {
 	if v, ok := values["product_id"].(int); !ok || v != 7 {
 		t.Errorf("product_id = %v (%T), want int 7", values["product_id"], values["product_id"])
 	}
-	// per-component OTA topics with dynamic discovery specs
-	cv := "ota_tibber_pulse_ir_hub_esp32_current_version"
-	ud := "ota_tibber_pulse_ir_hub_esp32_up2date"
+	// per-component OTA topics with dynamic discovery specs; the slug is
+	// prefixed with the OTAIndex (0 here) to avoid same-model collisions.
+	cv := "ota_0_tibber_pulse_ir_hub_esp32_current_version"
+	ud := "ota_0_tibber_pulse_ir_hub_esp32_up2date"
 	if values[cv] != "1.2" {
 		t.Errorf("%s = %v, want 1.2", cv, values[cv])
 	}
@@ -93,6 +94,25 @@ func TestBridgeState(t *testing.T) {
 	// bridge up_time is 10ms FreeRTOS ticks → seconds (÷100), not raw/ms
 	if v, ok := values["bridge_uptime"].(float64); !ok || v != 123.45 {
 		t.Errorf("bridge_uptime = %v (%T), want float64 123.45", values["bridge_uptime"], values["bridge_uptime"])
+	}
+}
+
+// TestBridgeStateOTAIndexDisambiguates guards against the collision where two
+// OTA components share a model: the OTAIndex must keep their topics distinct
+// so neither component's version data is silently overwritten.
+func TestBridgeStateOTAIndexDisambiguates(t *testing.T) {
+	u := BridgeUpdate{
+		OTA: []pulse.OTAEntry{
+			{Model: "efr32", OTAIndex: 1, CurrentVersion: "1.0"},
+			{Model: "efr32", OTAIndex: 2, CurrentVersion: "2.0"},
+		},
+	}
+	values, _ := bridgeState(u)
+	if values["ota_1_efr32_current_version"] != "1.0" {
+		t.Errorf("index 1 = %v, want 1.0", values["ota_1_efr32_current_version"])
+	}
+	if values["ota_2_efr32_current_version"] != "2.0" {
+		t.Errorf("index 2 = %v, want 2.0", values["ota_2_efr32_current_version"])
 	}
 }
 
