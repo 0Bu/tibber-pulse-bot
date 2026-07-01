@@ -166,6 +166,11 @@ type MQTTSink struct {
 	device           discovery.Device
 	bridge           discovery.BridgeDevice
 	bridgeDiscovered map[string]bool
+	// reconcilePending is set on an identifier transition and cleared once a
+	// reconcile has run against a complete manifest; reconcileOldDev is the
+	// identity we transitioned away from (swept even before OTA data arrives).
+	reconcilePending bool
+	reconcileOldDev  discovery.BridgeDevice
 }
 
 func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix string) (*MQTTSink, error) {
@@ -298,27 +303,36 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 		m.bridge.ESPVersion = u.Status.Firmware.ESP
 		m.bridge.EFRVersion = u.Status.Firmware.EFR
 	}
-	if u.Node != nil && m.bridge.EUI != u.Node.EUI {
-		// Identifier transition: on the first EUI learn the old identity is the
-		// legacy IP-based one (v1.0.4); on a later EUI change (node hardware
-		// swapped behind the same host) it's the previous EUI. Reconcile the
-		// retained discovery configs against the broker so stale ones — under
-		// the old identity, or left over from an earlier run under this identity
-		// (e.g. an OTA component that has since vanished) — are cleared, even
-		// across bot restarts. This runs once per session at first EUI learn.
-		oldDev := discovery.BridgeDevice{Host: m.bridge.Host, EUI: m.bridge.EUI}
+	// Identifier transition: on the first EUI learn the old identity is the
+	// legacy IP-based one (v1.0.4); on a later EUI change (node hardware swapped
+	// behind the same host) it's the previous EUI. Require a non-empty new EUI —
+	// /nodes.json can transiently return the node with an empty eui (FetchNode
+	// matches on node_id), and reacting to that would reset to the host-based id
+	// and wrongly clear the live EUI's discovery configs.
+	if u.Node != nil && u.Node.EUI != "" && m.bridge.EUI != u.Node.EUI {
+		m.reconcileOldDev = discovery.BridgeDevice{Host: m.bridge.Host, EUI: m.bridge.EUI}
 		m.bridge.EUI = u.Node.EUI
 		m.bridge.ProductModel = u.Node.ProductModel
 		m.bridge.NodeModel = u.Node.Model
 		m.bridgeDiscovered = map[string]bool{}
-		if m.discoveryPrefix != "" {
-			m.reconcileBridgeDiscovery(oldDev, u.OTA)
-		}
+		m.reconcilePending = true
 	}
 
 	values, dyn := bridgeState(u)
 
 	if m.discoveryPrefix != "" {
+		if m.reconcilePending {
+			// Reconcile retained discovery configs against the broker so stale
+			// ones — under the old identity, or left over from an earlier run
+			// under this identity (e.g. a vanished OTA component) — are cleared,
+			// even across restarts. Consider it settled only once it ran with a
+			// complete manifest, so a transient /ota_manifest.json miss on the
+			// transition cycle retries on the next cycle that has OTA data.
+			m.reconcileBridgeDiscovery(m.reconcileOldDev, u.OTA)
+			if len(u.OTA) > 0 {
+				m.reconcilePending = false
+			}
+		}
 		m.announceBridge(values, dyn)
 	}
 
@@ -588,7 +602,7 @@ func bridgeObjectID(topic, discoveryPrefix string) (string, bool) {
 		return "", false
 	}
 	oid := mid[i+1:]
-	if !strings.HasPrefix(oid, "tibber-pulse-bridge-") {
+	if !strings.HasPrefix(oid, discovery.BridgePrefix) {
 		return "", false
 	}
 	return oid, true
@@ -620,7 +634,7 @@ func (m *MQTTSink) enumerateRetainedConfigs() map[string]struct{} {
 	})
 	if !tok.WaitTimeout(5*time.Second) || tok.Error() != nil {
 		m.client.Unsubscribe(filter)
-		return found
+		return copyStringSet(&mu, found)
 	}
 	deadline := time.After(3 * time.Second)
 	quiet := time.NewTimer(500 * time.Millisecond)
@@ -639,10 +653,16 @@ func (m *MQTTSink) enumerateRetainedConfigs() map[string]struct{} {
 		}
 	}
 	m.client.Unsubscribe(filter)
+	return copyStringSet(&mu, found)
+}
+
+// copyStringSet returns a snapshot of src taken under mu, so the caller never
+// touches the map the subscribe callback may still be writing to.
+func copyStringSet(mu *sync.Mutex, src map[string]struct{}) map[string]struct{} {
 	mu.Lock()
 	defer mu.Unlock()
-	out := make(map[string]struct{}, len(found))
-	for k := range found {
+	out := make(map[string]struct{}, len(src))
+	for k := range src {
 		out[k] = struct{}{}
 	}
 	return out

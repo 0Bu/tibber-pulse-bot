@@ -20,14 +20,19 @@ type BridgeDevice struct {
 	NodeModel    string // /nodes.json model, e.g. "tibber-pulse-ir-node-efr32"
 }
 
+// BridgePrefix is the fixed prefix of every bridge HA object_id/identifier.
+// Exposed so callers that parse discovery topics (e.g. the output package's
+// reconcile) share one definition instead of hardcoding the literal.
+const BridgePrefix = "tibber-pulse-bridge-"
+
 // Identifier returns the stable HA device identifier. EUI takes precedence;
 // if missing (e.g. /nodes.json fetch hasn't succeeded yet), falls back to
 // the host so behaviour matches v1.0.4.
 func (b BridgeDevice) Identifier() string {
 	if b.EUI != "" {
-		return "tibber-pulse-bridge-" + sanitize(b.EUI)
+		return BridgePrefix + sanitize(b.EUI)
 	}
-	return "tibber-pulse-bridge-" + sanitize(b.Host)
+	return BridgePrefix + sanitize(b.Host)
 }
 
 // BridgeSensors maps the metric field name to its HA discovery metadata.
