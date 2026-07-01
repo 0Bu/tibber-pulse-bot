@@ -161,16 +161,22 @@ type MQTTSink struct {
 	// one retained config message per known sensor the first time it sees
 	// the sensor in a published batch. Requires the meter_serial reading to
 	// be present (used as the HA device identifier).
-	discoveryPrefix  string
-	discovered       map[string]bool // sensor name → already announced
-	device           discovery.Device
+	discoveryPrefix string
+	discovered      map[string]bool // sensor name → already announced
+	device          discovery.Device
+	// bridgeMu guards m.bridge, which the metrics goroutine mutates in
+	// PublishBridgeUpdate while the meter-publish goroutine reads it (Host /
+	// Identifier()) in maybeAnnounce for the via_device link.
+	bridgeMu         sync.Mutex
 	bridge           discovery.BridgeDevice
 	bridgeDiscovered map[string]bool
 	// reconcilePending is set on an identifier transition and cleared once a
-	// reconcile has run against a complete manifest; reconcileOldDev is the
-	// identity we transitioned away from (swept even before OTA data arrives).
-	reconcilePending bool
-	reconcileOldDev  discovery.BridgeDevice
+	// reconcile has run against a complete manifest (or after a few attempts,
+	// so an OTA-less firmware doesn't re-enumerate the broker forever);
+	// reconcileOldDev is the identity we transitioned away from.
+	reconcilePending  bool
+	reconcileAttempts int
+	reconcileOldDev   discovery.BridgeDevice
 }
 
 func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix string) (*MQTTSink, error) {
@@ -259,10 +265,12 @@ func (m *MQTTSink) maybeAnnounce(readings []sml.Reading) {
 		}
 		stateTopic := m.prefix + "/" + r.Name
 		topic := discovery.ConfigTopic(m.discoveryPrefix, r.Name, m.device)
+		m.bridgeMu.Lock()
 		via := ""
 		if m.bridge.Host != "" {
 			via = m.bridge.Identifier()
 		}
+		m.bridgeMu.Unlock()
 		payload, err := discovery.MarshalConfig(discovery.BuildConfig(r.Name, spec, m.device, stateTopic, via))
 		if err != nil {
 			continue
@@ -298,6 +306,10 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 	if m.bridge.Host == "" {
 		return fmt.Errorf("bridge host not set")
 	}
+	// Mutate m.bridge under the lock — maybeAnnounce reads it concurrently from
+	// the meter-publish goroutine. The reconcile/announce below only read it and
+	// run on this goroutine, so they stay outside the lock (no seconds-long hold).
+	m.bridgeMu.Lock()
 	m.bridge.NodeVersion = u.Metrics.NodeVersion
 	if u.Status != nil {
 		m.bridge.ESPVersion = u.Status.Firmware.ESP
@@ -316,7 +328,9 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 		m.bridge.NodeModel = u.Node.Model
 		m.bridgeDiscovered = map[string]bool{}
 		m.reconcilePending = true
+		m.reconcileAttempts = 0
 	}
+	m.bridgeMu.Unlock()
 
 	values, dyn := bridgeState(u)
 
@@ -325,11 +339,14 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 			// Reconcile retained discovery configs against the broker so stale
 			// ones — under the old identity, or left over from an earlier run
 			// under this identity (e.g. a vanished OTA component) — are cleared,
-			// even across restarts. Consider it settled only once it ran with a
-			// complete manifest, so a transient /ota_manifest.json miss on the
-			// transition cycle retries on the next cycle that has OTA data.
+			// even across restarts.
 			m.reconcileBridgeDiscovery(m.reconcileOldDev, u.OTA)
-			if len(u.OTA) > 0 {
+			m.reconcileAttempts++
+			// Settle once it ran with a complete manifest, or after a few
+			// attempts so an OTA-less firmware (endpoint 404s / returns []) does
+			// not re-enumerate the broker every cycle forever; the old-identity
+			// sweep already completed on the first attempt.
+			if len(u.OTA) > 0 || m.reconcileAttempts >= 3 {
 				m.reconcilePending = false
 			}
 		}
@@ -619,8 +636,9 @@ func (m *MQTTSink) enumerateRetainedConfigs() map[string]struct{} {
 	activity := make(chan struct{}, 1024)
 	filter := m.discoveryPrefix + "/+/+/config"
 	tok := m.client.Subscribe(filter, 0, func(_ mqtt.Client, msg mqtt.Message) {
-		if len(msg.Payload()) == 0 {
-			return // already-cleared config
+		if !msg.Retained() || len(msg.Payload()) == 0 {
+			return // only the broker's retained store is authoritative here;
+			// ignore live publishes and already-cleared (empty) configs
 		}
 		if _, ok := bridgeObjectID(msg.Topic(), m.discoveryPrefix); ok {
 			mu.Lock()
