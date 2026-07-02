@@ -255,6 +255,14 @@ func (m *MQTTSink) maybeAnnounce(readings []sml.Reading) {
 			return // wait for next frame
 		}
 	}
+	// Snapshot the bridge identifier once for the whole batch (consistent
+	// via_device across all sensors of this frame, one lock instead of N).
+	m.bridgeMu.Lock()
+	via := ""
+	if m.bridge.Host != "" {
+		via = m.bridge.Identifier()
+	}
+	m.bridgeMu.Unlock()
 	for _, r := range readings {
 		if r.Name == "" || m.discovered[r.Name] {
 			continue
@@ -265,12 +273,6 @@ func (m *MQTTSink) maybeAnnounce(readings []sml.Reading) {
 		}
 		stateTopic := m.prefix + "/" + r.Name
 		topic := discovery.ConfigTopic(m.discoveryPrefix, r.Name, m.device)
-		m.bridgeMu.Lock()
-		via := ""
-		if m.bridge.Host != "" {
-			via = m.bridge.Identifier()
-		}
-		m.bridgeMu.Unlock()
 		payload, err := discovery.MarshalConfig(discovery.BuildConfig(r.Name, spec, m.device, stateTopic, via))
 		if err != nil {
 			continue
@@ -340,13 +342,14 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 			// ones — under the old identity, or left over from an earlier run
 			// under this identity (e.g. a vanished OTA component) — are cleared,
 			// even across restarts.
-			m.reconcileBridgeDiscovery(m.reconcileOldDev, u.OTA)
+			swept := m.reconcileBridgeDiscovery(m.reconcileOldDev, u.OTA)
 			m.reconcileAttempts++
-			// Settle once it ran with a complete manifest, or after a few
-			// attempts so an OTA-less firmware (endpoint 404s / returns []) does
-			// not re-enumerate the broker every cycle forever; the old-identity
-			// sweep already completed on the first attempt.
-			if len(u.OTA) > 0 || m.reconcileAttempts >= 3 {
+			// Settle once a sweep actually ran (swept) and we either have a
+			// complete manifest or have retried a few times — so a transient
+			// subscribe failure doesn't abandon the old-identity sweep. The hard
+			// cap stops an OTA-less firmware or a broker that never allows the
+			// subscribe from re-enumerating every cycle forever.
+			if (swept && (len(u.OTA) > 0 || m.reconcileAttempts >= 3)) || m.reconcileAttempts >= 10 {
 				m.reconcilePending = false
 			}
 		}
@@ -552,9 +555,13 @@ func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discover
 // are no longer desired (e.g. a per-OTA-component sensor left over from an
 // earlier run whose component has since vanished or whose slug changed).
 // Scoped to our own identifiers, so it is safe when other devices share the
-// discovery prefix. Best-effort — broker errors just skip the sweep.
-func (m *MQTTSink) reconcileBridgeDiscovery(oldDev discovery.BridgeDevice, ota []pulse.OTAEntry) {
-	observed := m.enumerateRetainedConfigs()
+// discovery prefix. Returns whether the broker enumeration actually succeeded,
+// so the caller doesn't spend its retry budget on failed sweeps.
+func (m *MQTTSink) reconcileBridgeDiscovery(oldDev discovery.BridgeDevice, ota []pulse.OTAEntry) bool {
+	observed, ok := m.enumerateRetainedConfigs()
+	if !ok {
+		return false
+	}
 	desired := m.desiredBridgeTopics(ota)
 	// Only trust "current-id config not desired → remove" when the manifest was
 	// actually fetched this cycle (len(ota) > 0); an empty u.OTA is usually a
@@ -562,6 +569,7 @@ func (m *MQTTSink) reconcileBridgeDiscovery(oldDev discovery.BridgeDevice, ota [
 	for _, topic := range staleBridgeConfigs(observed, desired, m.discoveryPrefix, oldDev.Identifier(), m.bridge.Identifier(), len(ota) > 0) {
 		_ = m.client.Publish(topic, 0, true, "")
 	}
+	return true
 }
 
 // desiredBridgeTopics is the set of discovery config topics that should exist
@@ -628,9 +636,10 @@ func bridgeObjectID(topic, discoveryPrefix string) (string, bool) {
 // enumerateRetainedConfigs subscribes to the HA discovery config topics and
 // collects the non-empty bridge configs the broker replays from its retained
 // store. MQTT has no end-of-retained signal, so it collects until a short
-// quiet window elapses (hard-capped). Best-effort: a subscribe failure yields
-// an empty set, so the reconcile simply clears nothing.
-func (m *MQTTSink) enumerateRetainedConfigs() map[string]struct{} {
+// quiet window elapses (hard-capped). The bool reports whether the SUBSCRIBE
+// succeeded; on failure it returns an empty set and false so the caller can
+// avoid counting a failed sweep against its retry budget.
+func (m *MQTTSink) enumerateRetainedConfigs() (map[string]struct{}, bool) {
 	found := make(map[string]struct{})
 	var mu sync.Mutex
 	activity := make(chan struct{}, 1024)
@@ -652,7 +661,7 @@ func (m *MQTTSink) enumerateRetainedConfigs() map[string]struct{} {
 	})
 	if !tok.WaitTimeout(5*time.Second) || tok.Error() != nil {
 		m.client.Unsubscribe(filter)
-		return copyStringSet(&mu, found)
+		return copyStringSet(&mu, found), false
 	}
 	deadline := time.After(3 * time.Second)
 	quiet := time.NewTimer(500 * time.Millisecond)
@@ -671,7 +680,7 @@ func (m *MQTTSink) enumerateRetainedConfigs() map[string]struct{} {
 		}
 	}
 	m.client.Unsubscribe(filter)
-	return copyStringSet(&mu, found)
+	return copyStringSet(&mu, found), true
 }
 
 // copyStringSet returns a snapshot of src taken under mu, so the caller never
