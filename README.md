@@ -225,16 +225,22 @@ Unknown OBIS codes fall through to `<topic-prefix>/obis/<code>` (e.g.
 
 Bridge state is fetched from `/metrics.json`, `/nodes.json`, `/status.json`
 and `/ota_manifest.json` every `--metrics-interval` (default 60s) and
-published under `<topic-prefix>/bridge/<name>`:
+published under `<topic-prefix>/bridge/<name>`. Every field the bot decodes
+from those four endpoints is published; string fields are only emitted (and
+announced to HA) once they carry a non-empty value.
 
 | Source | Sensor | Type |
 |---|---|---|
-| metrics.json | `battery_voltage`, `temperature`, `rssi` (meter link), `lqi`, `uptime`, `pkg_sent`, `pkg_received`, `readings_received`, `corrupt_readings`, `invalid_readings` | numeric |
-| nodes.json | `last_data_age` (s since last meter telegram) | numeric |
-| nodes.json | `available` | binary `ON`/`OFF` |
-| status.json | `wifi_rssi` (router link, distinct from `rssi`) | numeric |
-| status.json | `cloud_mqtt` (Tibber cloud connection) | binary `ON`/`OFF` |
+| metrics.json | `battery_voltage`, `temperature`, `rssi` (meter link), `lqi`, `radio_tx_power`, `uptime` (node), `meter_msg_sent`, `pkg_sent`, `pkg_received`, `readings_received`, `corrupt_readings`, `invalid_readings`, `compression_error_readings`, `meter_mode`, `bootloader_version`, `product_id` | numeric |
+| metrics.json | `node_version` (node firmware) | text |
+| nodes.json | `node_id`, `last_seen_age`, `last_data_age` (s since last meter telegram), `average_rssi`, `average_lqi` | numeric |
+| nodes.json | `eui`, `product_model`, `model`, `version`, `ota_distribute_status` | text |
+| nodes.json | `available`, `paired` | binary `ON`/`OFF` |
+| status.json | `bridge_uptime`, `wifi_rssi` (router link, distinct from `rssi`) | numeric |
+| status.json | `pairing_status`, `firmware_esp`, `firmware_efr`, `wifi_ip`, `wifi_ssid`, `wifi_bssid` | text |
+| status.json | `wifi_connected`, `cloud_mqtt` (Tibber cloud connection), `cloud_mqtt_subscribed`, `ota_update_running` | binary `ON`/`OFF` |
 | ota_manifest.json | `update_available` (any component out of date) | binary `ON`/`OFF` |
+| ota_manifest.json | per component `ota_<index>_<model>_current_version`, `ota_<index>_<model>_manifest_version` (text), `ota_<index>_<model>_up2date` (binary) | text / binary |
 
 With `--ha-discovery` they appear as a separate **Tibber Pulse Bridge
 \<EUI\>** device in HA. The bridge device card shows both ESP32 hub and
