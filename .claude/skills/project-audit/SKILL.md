@@ -61,12 +61,17 @@ and confirm README/chart links point at `github.com/0Bu/…`.
 Every repo-relative path CLAUDE.md points at should resolve:
 
 ```bash
-grep -oE '(cmd|internal|chart)/[A-Za-z0-9._/-]+' CLAUDE.md | sort -u | while read -r p; do
-  [ -e "$p" ] || echo "MISSING: $p referenced in CLAUDE.md"
-done
+grep -oE '(cmd|internal|chart)/[A-Za-z0-9._/-]+' CLAUDE.md | sort -u \
+  | grep -vE '^(chart/charts/|dist/)' \
+  | while read -r p; do
+      [ -e "$p" ] || echo "MISSING: $p referenced in CLAUDE.md"
+    done
 ```
 
 A missing path means a file was moved/renamed without updating the docs.
+`chart/charts/` and `dist/` are excluded — they're gitignored build outputs
+CLAUDE.md mentions by name but that don't exist until a build runs; their
+absence is expected, not drift.
 
 ## 5. Env-var parity (.env.example ↔ docker-compose ↔ chart)
 
