@@ -107,6 +107,10 @@ func MarshalConfig(cfg Config) ([]byte, error) {
 	return json.Marshal(cfg)
 }
 
+// Sanitize exposes the topic/id slugifier for callers that build dynamic
+// sensor names (e.g. per-OTA-component bridge topics keyed by component model).
+func Sanitize(s string) string { return sanitize(s) }
+
 // sanitize lower-cases and replaces non-alphanumerics with underscores so
 // the unique_id is safe for MQTT topics and HA's entity-id slugifier.
 func sanitize(s string) string {

@@ -161,12 +161,58 @@ type MQTTSink struct {
 	// one retained config message per known sensor the first time it sees
 	// the sensor in a published batch. Requires the meter_serial reading to
 	// be present (used as the HA device identifier).
-	discoveryPrefix  string
-	mu               sync.Mutex      // guards discovered/bridgeDiscovered against the OnConnect reset
-	discovered       map[string]bool // sensor name → already announced
-	device           discovery.Device
+	discoveryPrefix string
+	mu              sync.Mutex      // guards discovered/bridgeDiscovered against the OnConnect reset
+	discovered      map[string]bool // sensor name → already announced
+	device          discovery.Device
+	// bridgeMu guards m.bridge, which the metrics goroutine mutates in
+	// PublishBridgeUpdate while the meter-publish goroutine reads it (Host /
+	// Identifier()) in maybeAnnounce for the via_device link.
+	bridgeMu         sync.Mutex
 	bridge           discovery.BridgeDevice
 	bridgeDiscovered map[string]bool
+	// reconcilePending is set on an identifier transition and cleared once a
+	// reconcile has run against a complete manifest (or after a few attempts,
+	// so an OTA-less firmware doesn't re-enumerate the broker forever);
+	// reconcileOldDev is the identity we transitioned away from.
+	reconcilePending  bool
+	reconcileAttempts int
+	reconcileFailures int // consecutive sweeps whose broker enumeration failed
+	reconcileOldDev   discovery.BridgeDevice
+}
+
+// Reconcile-settle thresholds. The broker reconcile re-enumerates retained
+// discovery configs after an identifier transition until one of these bounds
+// is hit; see reconcileSettled.
+const (
+	// A successful sweep that saw the OTA manifest reconciles current-identity
+	// OTA configs immediately. Firmware without OTA never delivers a manifest,
+	// so its old-identity sweep is trusted after this many successful sweeps —
+	// large enough to ride out a few transient /ota_manifest.json fetch misses
+	// before assuming the firmware is genuinely OTA-less.
+	reconcileOTALessSweeps = 5
+	// Stop reconciling once the broker enumeration has failed this many times
+	// in a row — a broker that denies the discovery-wildcard SUBSCRIBE will
+	// never succeed, so don't stall the publish path on it every cycle.
+	reconcileMaxFailures = 3
+	// Absolute backstop so no bridge/broker combination re-enumerates forever.
+	reconcileMaxAttempts = 10
+)
+
+// reconcileSettled reports whether the broker-reconcile loop can stop after a
+// sweep. Pure so the settle policy is unit-testable without a live broker.
+func reconcileSettled(swept, haveOTA bool, attempts, failures int) bool {
+	switch {
+	case swept && haveOTA:
+		return true // full manifest reconciled under the current identity
+	case swept && attempts >= reconcileOTALessSweeps:
+		return true // no manifest after a grace — assume OTA-less firmware
+	case failures >= reconcileMaxFailures:
+		return true // broker keeps refusing the enumeration; give up
+	case attempts >= reconcileMaxAttempts:
+		return true // hard backstop
+	}
+	return false
 }
 
 func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix string) (*MQTTSink, error) {
@@ -256,6 +302,12 @@ func (m *MQTTSink) maybeAnnounce(readings []sml.Reading) {
 			return // wait for next frame
 		}
 	}
+	// The bridge identifier (via_device) is snapshotted lazily on the first
+	// sensor that actually needs announcing, so the steady state — every
+	// telegram, all sensors already discovered — skips the lock and string
+	// build entirely. Snapshotted once so all sensors of this frame share a
+	// consistent via.
+	via, viaSet := "", false
 	for _, r := range readings {
 		if r.Name == "" {
 			continue
@@ -270,12 +322,16 @@ func (m *MQTTSink) maybeAnnounce(readings []sml.Reading) {
 		if !ok {
 			continue // no HA metadata for this OBIS — skip discovery
 		}
+		if !viaSet {
+			m.bridgeMu.Lock()
+			if m.bridge.Host != "" {
+				via = m.bridge.Identifier()
+			}
+			m.bridgeMu.Unlock()
+			viaSet = true
+		}
 		stateTopic := m.prefix + "/" + r.Name
 		topic := discovery.ConfigTopic(m.discoveryPrefix, r.Name, m.device)
-		via := ""
-		if m.bridge.Host != "" {
-			via = m.bridge.Identifier()
-		}
 		payload, err := discovery.MarshalConfig(discovery.BuildConfig(r.Name, spec, m.device, stateTopic, via))
 		if err != nil {
 			continue
@@ -307,37 +363,70 @@ type BridgeUpdate struct {
 // PublishBridgeUpdate publishes bridge metrics + node/status/OTA derived
 // values under <prefix>/bridge/<name>. On the first call after EUI is
 // known, retained HA discovery configs are emitted (or refreshed) for every
-// sensor that has metadata in discovery.BridgeSensors.
+// sensor with metadata in discovery.BridgeSensors plus the dynamically-named
+// per-OTA-component sensors carried in the dyn-spec map from bridgeState.
 func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 	if m.bridge.Host == "" {
 		return fmt.Errorf("bridge host not set")
 	}
+	// Mutate m.bridge under the lock — maybeAnnounce reads it concurrently from
+	// the meter-publish goroutine. The reconcile/announce below only read it and
+	// run on this goroutine, so they stay outside the lock (no seconds-long hold).
+	m.bridgeMu.Lock()
 	m.bridge.NodeVersion = u.Metrics.NodeVersion
 	if u.Status != nil {
 		m.bridge.ESPVersion = u.Status.Firmware.ESP
 		m.bridge.EFRVersion = u.Status.Firmware.EFR
 	}
-	if u.Node != nil {
-		// EUI transition: clear the legacy IP-based discovery topics from
-		// v1.0.4 (HA picks up empty retained payload as "remove device"),
-		// then re-publish under the new EUI-based identifier.
-		if m.bridge.EUI != u.Node.EUI {
-			if m.bridge.EUI == "" {
-				// First time we learn the EUI — always best-effort sweep
-				// of legacy IP-based topics, idempotent if nothing's there.
-				m.cleanupOldBridgeDiscovery()
-			}
-			m.bridge.EUI = u.Node.EUI
-			m.bridge.ProductModel = u.Node.ProductModel
-			m.bridge.NodeModel = u.Node.Model
-			m.bridgeDiscovered = map[string]bool{}
-		}
+	// Identifier transition: on the first EUI learn the old identity is the
+	// legacy IP-based one (v1.0.4); on a later EUI change (node hardware swapped
+	// behind the same host) it's the previous EUI. Require a non-empty new EUI —
+	// /nodes.json can transiently return the node with an empty eui (FetchNode
+	// matches on node_id), and reacting to that would reset to the host-based id
+	// and wrongly clear the live EUI's discovery configs.
+	if u.Node != nil && u.Node.EUI != "" && m.bridge.EUI != u.Node.EUI {
+		m.reconcileOldDev = discovery.BridgeDevice{Host: m.bridge.Host, EUI: m.bridge.EUI}
+		m.bridge.EUI = u.Node.EUI
+		m.bridge.ProductModel = u.Node.ProductModel
+		m.bridge.NodeModel = u.Node.Model
+		// bridgeDiscovered and discovered are guarded by mu (the OnConnect
+		// handler resets them from the MQTT client goroutine), so take mu even
+		// while holding bridgeMu here. Lock order bridgeMu→mu is the only
+		// nesting; no path acquires them the other way round, so this can't
+		// deadlock. discovered is reset too so meter sensors re-announce with a
+		// via_device pointing at the new identifier — otherwise a sensor first
+		// announced before the EUI was learned keeps a via link to the now-swept
+		// host-based bridge device.
+		m.mu.Lock()
+		m.bridgeDiscovered = map[string]bool{}
+		m.discovered = map[string]bool{}
+		m.mu.Unlock()
+		m.reconcilePending = true
+		m.reconcileAttempts = 0
+		m.reconcileFailures = 0
 	}
+	m.bridgeMu.Unlock()
 
-	values := bridgeStateMap(u)
+	values, dyn := bridgeState(u)
 
 	if m.discoveryPrefix != "" {
-		m.announceBridge(values)
+		if m.reconcilePending {
+			// Reconcile retained discovery configs against the broker so stale
+			// ones — under the old identity, or left over from an earlier run
+			// under this identity (e.g. a vanished OTA component) — are cleared,
+			// even across restarts.
+			swept := m.reconcileBridgeDiscovery(m.reconcileOldDev, u.OTA)
+			m.reconcileAttempts++
+			if swept {
+				m.reconcileFailures = 0
+			} else {
+				m.reconcileFailures++
+			}
+			if reconcileSettled(swept, len(u.OTA) > 0, m.reconcileAttempts, m.reconcileFailures) {
+				m.reconcilePending = false
+			}
+		}
+		m.announceBridge(values, dyn)
 	}
 
 	for name, raw := range values {
@@ -358,7 +447,8 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 }
 
 // formatStatePayload renders bool → "ON"/"OFF" (HA binary_sensor default),
-// numeric → 3-decimal string, anything else → empty (skip publish).
+// numeric → 3-decimal/integer string, string → verbatim. An empty string (or
+// unknown type) yields "" so the caller skips publishing it.
 func formatStatePayload(v any) string {
 	switch x := v.(type) {
 	case bool:
@@ -372,49 +462,140 @@ func formatStatePayload(v any) string {
 		return fmt.Sprintf("%d", x)
 	case int64:
 		return fmt.Sprintf("%d", x)
+	case string:
+		return x
 	}
 	return ""
 }
 
-// bridgeStateMap merges metrics + node + status + OTA into one flat map
-// keyed by the same names that BridgeSensors uses for HA discovery.
-// Values are bool for binary sensors, float64/int for numeric ones.
-func bridgeStateMap(u BridgeUpdate) map[string]any {
+// bridgeState merges every decoded field from the four bridge endpoints into
+// one flat map keyed by the same names BridgeSensors uses for HA discovery.
+// Values are bool (binary_sensor), float64/int (numeric) or string (text).
+// The second return value holds discovery specs for the dynamically-named
+// per-OTA-component sensors, which can't live in the static BridgeSensors map
+// because their names embed the component model.
+//
+// The pre-existing counter/measurement fields keep their float64 type so
+// their MQTT payloads (and HA history) are unchanged; newly added integer
+// counters and identifiers use int so they render as "42", not "42.000".
+func bridgeState(u BridgeUpdate) (map[string]any, map[string]discovery.SensorSpec) {
+	m := u.Metrics
 	out := map[string]any{
-		"battery_voltage":   u.Metrics.BatteryVoltage,
-		"temperature":       u.Metrics.Temperature,
-		"rssi":              u.Metrics.AvgRSSI,
-		"lqi":               u.Metrics.AvgLQI,
-		"uptime":            float64(u.Metrics.UptimeMS) / 1000.0,
-		"pkg_sent":          float64(u.Metrics.MeterPkgCountSent),
-		"pkg_received":      float64(u.Metrics.MeterPkgCountRecv),
-		"readings_received": float64(u.Metrics.MeterReadingCountRecv),
-		"corrupt_readings":  float64(u.Metrics.MeterCorruptCountRecv),
-		"invalid_readings":  float64(u.Metrics.InvalidMeterReadings),
+		"battery_voltage":            m.BatteryVoltage,
+		"temperature":                m.Temperature,
+		"rssi":                       m.AvgRSSI,
+		"lqi":                        m.AvgLQI,
+		"radio_tx_power":             float64(m.RadioTxPower),
+		"uptime":                     float64(m.UptimeMS) / 1000.0,
+		"meter_msg_sent":             m.MeterMsgCountSent,
+		"pkg_sent":                   float64(m.MeterPkgCountSent),
+		"pkg_received":               float64(m.MeterPkgCountRecv),
+		"readings_received":          float64(m.MeterReadingCountRecv),
+		"corrupt_readings":           float64(m.MeterCorruptCountRecv),
+		"invalid_readings":           float64(m.InvalidMeterReadings),
+		"compression_error_readings": m.CompressionErrorReadings,
+		"meter_mode":                 m.MeterMode,
+		"bootloader_version":         m.BootloaderVersion,
+		"product_id":                 m.ProductID,
+		"node_version":               m.NodeVersion,
 	}
-	if u.Node != nil {
-		out["available"] = u.Node.Available
-		out["last_data_age"] = float64(u.Node.LastDataMS) / 1000.0
+	if n := u.Node; n != nil {
+		out["node_id"] = n.NodeID
+		out["eui"] = n.EUI
+		out["product_model"] = n.ProductModel
+		out["model"] = n.Model
+		out["version"] = n.Version
+		out["available"] = n.Available
+		out["paired"] = n.Paired
+		out["last_seen_age"] = float64(n.LastSeenMS) / 1000.0
+		out["last_data_age"] = float64(n.LastDataMS) / 1000.0
+		out["average_rssi"] = float64(n.AverageRSSI)
+		out["average_lqi"] = float64(n.AverageLQI)
+		out["ota_distribute_status"] = n.OTADistributeStatus
 	}
-	if u.Status != nil {
-		out["wifi_rssi"] = float64(u.Status.WiFi.RSSI)
-		out["cloud_mqtt"] = u.Status.MQTT.Connected
+	if s := u.Status; s != nil {
+		out["pairing_status"] = s.PairingStatus
+		// status up_time is in 10ms FreeRTOS ticks (ESP-IDF 100Hz default,
+		// measured at 100.15/s on the live bridge), NOT milliseconds like
+		// node_uptime_ms — ÷100 gives seconds for the duration sensor.
+		out["bridge_uptime"] = float64(s.UpTime) / 100.0
+		out["firmware_esp"] = s.Firmware.ESP
+		out["firmware_efr"] = s.Firmware.EFR
+		out["wifi_ip"] = s.WiFi.IP
+		out["wifi_ssid"] = s.WiFi.SSID
+		out["wifi_bssid"] = s.WiFi.BSSID
+		out["wifi_rssi"] = float64(s.WiFi.RSSI)
+		out["wifi_connected"] = s.WiFi.Connected
+		out["cloud_mqtt"] = s.MQTT.Connected
+		out["cloud_mqtt_subscribed"] = s.MQTT.Subscribed
+		out["ota_update_running"] = s.OTAUpdateRunning
 	}
+	dyn := map[string]discovery.SensorSpec{}
 	if len(u.OTA) > 0 {
-		// Aggregate: any component out of date → update available.
-		updateAvail := false
+		anyOutdated := false
 		for _, e := range u.OTA {
 			if !e.Up2Date {
-				updateAvail = true
-				break
+				anyOutdated = true
+			}
+			for _, s := range otaSensors(e) {
+				out[s.name] = s.value
+				dyn[s.name] = s.spec
 			}
 		}
-		out["update_available"] = updateAvail
+		out["update_available"] = anyOutdated
 	}
-	return out
+	// Drop empty string fields so HA only gets an entity once a value exists
+	// (lazy announce). Removal of components that genuinely vanish is handled
+	// out-of-band against the broker (see reconcileBridgeDiscovery), not by
+	// per-cycle diffing here — that previously flapped entities on transient
+	// empty-version blips.
+	for k, v := range out {
+		if s, ok := v.(string); ok && s == "" {
+			delete(out, k)
+			delete(dyn, k)
+		}
+	}
+	return out, dyn
 }
 
-func (m *MQTTSink) announceBridge(values map[string]any) {
+// otaKey derives a topic-safe slug and a human label for one OTA component.
+// The slug is prefixed with the component's OTAIndex so two entries sharing
+// (or sanitizing to) the same model can't collide onto one topic and silently
+// overwrite each other's value and discovery spec.
+func otaKey(e pulse.OTAEntry) (slug, label string) {
+	label = e.Model
+	if label == "" {
+		label = fmt.Sprintf("component %d", e.OTAIndex)
+	}
+	if s := discovery.Sanitize(e.Model); s != "" {
+		slug = fmt.Sprintf("%d_%s", e.OTAIndex, s)
+	} else {
+		slug = fmt.Sprintf("%d", e.OTAIndex)
+	}
+	return slug, label
+}
+
+// otaSensor is one dynamically-named per-OTA-component sensor: its bridge
+// topic-suffix name, HA discovery spec, and current value.
+type otaSensor struct {
+	name  string
+	spec  discovery.SensorSpec
+	value any
+}
+
+// otaSensors is the single source of truth for the per-component topic names,
+// so bridgeState (values + specs) and desiredBridgeTopics (reconcile) derive
+// the exact same set and can't drift apart.
+func otaSensors(e pulse.OTAEntry) []otaSensor {
+	slug, label := otaKey(e)
+	return []otaSensor{
+		{"ota_" + slug + "_current_version", discovery.SensorSpec{FriendlyName: "OTA " + label + " Current Version"}, e.CurrentVersion},
+		{"ota_" + slug + "_manifest_version", discovery.SensorSpec{FriendlyName: "OTA " + label + " Manifest Version"}, e.ManifestVersion},
+		{"ota_" + slug + "_up2date", discovery.SensorSpec{FriendlyName: "OTA " + label + " Up To Date", Component: "binary_sensor"}, e.Up2Date},
+	}
+}
+
+func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discovery.SensorSpec) {
 	for name := range values {
 		m.mu.Lock()
 		seen := m.bridgeDiscovered[name]
@@ -423,6 +604,9 @@ func (m *MQTTSink) announceBridge(values map[string]any) {
 			continue
 		}
 		spec, ok := discovery.BridgeSensors[name]
+		if !ok {
+			spec, ok = dyn[name]
+		}
 		if !ok {
 			continue
 		}
@@ -442,14 +626,163 @@ func (m *MQTTSink) announceBridge(values map[string]any) {
 	}
 }
 
-// cleanupOldBridgeDiscovery is called once when we transition from an
-// IP-based bridge identifier (v1.0.4) to an EUI-based one (v1.0.5+). It
-// publishes empty retained payloads to the legacy topics so HA garbage
-// collects the orphan device card. Best-effort — failures are ignored.
-func (m *MQTTSink) cleanupOldBridgeDiscovery() {
-	oldDev := discovery.BridgeDevice{Host: m.bridge.Host} // EUI empty → IP-based
-	for name, spec := range discovery.BridgeSensors {
-		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, oldDev)
+// reconcileBridgeDiscovery reads the retained bridge discovery configs from
+// the broker — the durable source of truth that survives bot restarts, which
+// an in-memory record would not — and clears the stale ones: configs under the
+// previous identifier (oldDev), and configs under the current identifier that
+// are no longer desired (e.g. a per-OTA-component sensor left over from an
+// earlier run whose component has since vanished or whose slug changed).
+// Scoped to our own identifiers, so it is safe when other devices share the
+// discovery prefix. Returns whether the broker enumeration actually succeeded,
+// so the caller doesn't spend its retry budget on failed sweeps.
+func (m *MQTTSink) reconcileBridgeDiscovery(oldDev discovery.BridgeDevice, ota []pulse.OTAEntry) bool {
+	observed, ok := m.enumerateRetainedConfigs()
+	if !ok {
+		return false
+	}
+	desired := m.desiredBridgeTopics(ota)
+	// Only trust "current-id config not desired → remove" when the manifest was
+	// actually fetched this cycle (len(ota) > 0); an empty u.OTA is usually a
+	// transient fetch miss, and clearing on it would briefly drop live entities.
+	for _, topic := range staleBridgeConfigs(observed, desired, m.discoveryPrefix, oldDev.Identifier(), m.bridge.Identifier(), len(ota) > 0) {
 		_ = m.client.Publish(topic, 0, true, "")
 	}
+	return true
+}
+
+// desiredBridgeTopics is the set of discovery config topics that should exist
+// under the current identifier this cycle: every static BridgeSensors entry
+// plus the per-component OTA sensors for the current manifest.
+func (m *MQTTSink) desiredBridgeTopics(ota []pulse.OTAEntry) map[string]struct{} {
+	d := make(map[string]struct{})
+	for name, spec := range discovery.BridgeSensors {
+		d[discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, m.bridge)] = struct{}{}
+	}
+	for _, e := range ota {
+		for _, s := range otaSensors(e) {
+			d[discovery.BridgeConfigTopic(m.discoveryPrefix, s.name, s.spec, m.bridge)] = struct{}{}
+		}
+	}
+	return d
+}
+
+// staleBridgeConfigs returns the observed config topics to clear: those under
+// our previous identifier (oldID, the departed identity — always swept), plus,
+// when curIDComplete is true, those under the current identifier (curID) that
+// aren't desired. Topics under any other identifier — which on a shared broker
+// may belong to a different bridge — are left untouched. Pure.
+func staleBridgeConfigs(observed, desired map[string]struct{}, discoveryPrefix, oldID, curID string, curIDComplete bool) []string {
+	var stale []string
+	for topic := range observed {
+		if _, want := desired[topic]; want {
+			continue
+		}
+		oid, ok := bridgeObjectID(topic, discoveryPrefix)
+		if !ok {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(oid, oldID+"_"):
+			stale = append(stale, topic)
+		case curIDComplete && strings.HasPrefix(oid, curID+"_"):
+			stale = append(stale, topic)
+		}
+	}
+	return stale
+}
+
+// bridgeObjectID extracts the HA object_id from a discovery config topic of the
+// form <prefix>/<component>/<object_id>/config and reports whether it belongs
+// to a bridge sensor (object_id prefix "tibber-pulse-bridge-"). Meter configs
+// (object_id "tibber-pulse-<serial>_...") and non-config topics are rejected.
+func bridgeObjectID(topic, discoveryPrefix string) (string, bool) {
+	if !strings.HasPrefix(topic, discoveryPrefix+"/") || !strings.HasSuffix(topic, "/config") {
+		return "", false
+	}
+	mid := topic[len(discoveryPrefix)+1 : len(topic)-len("/config")]
+	i := strings.LastIndex(mid, "/")
+	if i < 0 {
+		return "", false
+	}
+	oid := mid[i+1:]
+	if !strings.HasPrefix(oid, discovery.BridgePrefix) {
+		return "", false
+	}
+	return oid, true
+}
+
+// enumerateRetainedConfigs subscribes to the HA discovery config topics and
+// collects the non-empty bridge configs the broker replays from its retained
+// store. MQTT has no end-of-retained signal, so it collects until a short
+// quiet window elapses (hard-capped). The bool reports whether the SUBSCRIBE
+// succeeded; on failure it returns an empty set and false so the caller can
+// avoid counting a failed sweep against its retry budget.
+func (m *MQTTSink) enumerateRetainedConfigs() (map[string]struct{}, bool) {
+	found := make(map[string]struct{})
+	var mu sync.Mutex
+	activity := make(chan struct{}, 1024)
+	filter := m.discoveryPrefix + "/+/+/config"
+	tok := m.client.Subscribe(filter, 0, func(_ mqtt.Client, msg mqtt.Message) {
+		if !msg.Retained() || len(msg.Payload()) == 0 {
+			return // only the broker's retained store is authoritative here;
+			// ignore live publishes and already-cleared (empty) configs
+		}
+		if _, ok := bridgeObjectID(msg.Topic(), m.discoveryPrefix); ok {
+			mu.Lock()
+			found[msg.Topic()] = struct{}{}
+			mu.Unlock()
+		}
+		select {
+		case activity <- struct{}{}:
+		default:
+		}
+	})
+	if !tok.WaitTimeout(5*time.Second) || tok.Error() != nil {
+		m.client.Unsubscribe(filter)
+		return copyStringSet(&mu, found), false
+	}
+	deadline := time.After(3 * time.Second)
+	// Don't arm the short inter-message quiet window until the first retained
+	// config actually arrives: a loaded broker can take longer than the window
+	// to start replaying its retained store, and settling before then would
+	// return an empty set that the caller wrongly trusts as "nothing stale".
+	// Until first activity, only the hard deadline can end the sweep (a receive
+	// from a nil channel blocks forever).
+	var quiet *time.Timer
+	var quietC <-chan time.Time
+	for done := false; !done; {
+		select {
+		case <-activity:
+			if quiet == nil {
+				quiet = time.NewTimer(500 * time.Millisecond)
+				quietC = quiet.C
+			} else {
+				if !quiet.Stop() {
+					<-quiet.C
+				}
+				quiet.Reset(500 * time.Millisecond)
+			}
+		case <-quietC:
+			done = true
+		case <-deadline:
+			done = true
+		}
+	}
+	if quiet != nil {
+		quiet.Stop()
+	}
+	m.client.Unsubscribe(filter)
+	return copyStringSet(&mu, found), true
+}
+
+// copyStringSet returns a snapshot of src taken under mu, so the caller never
+// touches the map the subscribe callback may still be writing to.
+func copyStringSet(mu *sync.Mutex, src map[string]struct{}) map[string]struct{} {
+	mu.Lock()
+	defer mu.Unlock()
+	out := make(map[string]struct{}, len(src))
+	for k := range src {
+		out[k] = struct{}{}
+	}
+	return out
 }

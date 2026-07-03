@@ -34,6 +34,10 @@ distributable as a public GitHub project.
   Close frame). This is normal — silently reconnect with short backoff.
 - The path `http://<bridge>/nodes/1/data` is the **SPA UI route**, not the
   data API — it always returns the HTML shell. Do not point new code at it.
+- **`status.json` `up_time` unit**: 10 ms FreeRTOS ticks (ESP-IDF 100 Hz
+  default — measured 100.15 ticks/s on a live bridge), **not** milliseconds.
+  Divide by 100 for seconds. Contrast `metrics.json` `node_uptime_ms`, which
+  genuinely is ms. `nodes.json` `last_seen_ms` / `last_data_ms` are also ms.
 
 ## SML / OBIS facts
 
