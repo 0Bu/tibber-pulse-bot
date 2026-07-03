@@ -162,6 +162,7 @@ type MQTTSink struct {
 	// the sensor in a published batch. Requires the meter_serial reading to
 	// be present (used as the HA device identifier).
 	discoveryPrefix string
+	mu              sync.Mutex      // guards discovered/bridgeDiscovered against the OnConnect reset
 	discovered      map[string]bool // sensor name → already announced
 	device          discovery.Device
 	// bridgeMu guards m.bridge, which the metrics goroutine mutates in
@@ -180,12 +181,28 @@ type MQTTSink struct {
 }
 
 func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix string) (*MQTTSink, error) {
+	m := &MQTTSink{
+		prefix:           strings.TrimRight(topicPrefix, "/"),
+		discoveryPrefix:  strings.TrimRight(discoveryPrefix, "/"),
+		discovered:       map[string]bool{},
+		bridgeDiscovered: map[string]bool{},
+	}
 	opts := mqtt.NewClientOptions().
 		AddBroker(fmt.Sprintf("tcp://%s:%d", host, port)).
 		SetClientID(clientID).
 		SetAutoReconnect(true).
 		SetConnectTimeout(10 * time.Second).
-		SetCleanSession(true)
+		SetCleanSession(true).
+		// Reset the announce-dedup on every (re)connect. A broker without
+		// persistence drops all retained messages when it restarts, so the
+		// HA discovery configs must be re-published on reconnect — otherwise
+		// HA never recreates the entities and only sees bare state topics.
+		SetOnConnectHandler(func(mqtt.Client) {
+			m.mu.Lock()
+			m.discovered = map[string]bool{}
+			m.bridgeDiscovered = map[string]bool{}
+			m.mu.Unlock()
+		})
 
 	c := mqtt.NewClient(opts)
 	t := c.Connect()
@@ -195,13 +212,8 @@ func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix s
 	if err := t.Error(); err != nil {
 		return nil, fmt.Errorf("mqtt: connect %s:%d: %w", host, port, err)
 	}
-	return &MQTTSink{
-		client:           c,
-		prefix:           strings.TrimRight(topicPrefix, "/"),
-		discoveryPrefix:  strings.TrimRight(discoveryPrefix, "/"),
-		discovered:       map[string]bool{},
-		bridgeDiscovered: map[string]bool{},
-	}, nil
+	m.client = c
+	return m, nil
 }
 
 // SetBridgeHost records the bridge host so meter discovery payloads can
@@ -264,7 +276,13 @@ func (m *MQTTSink) maybeAnnounce(readings []sml.Reading) {
 	}
 	m.bridgeMu.Unlock()
 	for _, r := range readings {
-		if r.Name == "" || m.discovered[r.Name] {
+		if r.Name == "" {
+			continue
+		}
+		m.mu.Lock()
+		seen := m.discovered[r.Name]
+		m.mu.Unlock()
+		if seen {
 			continue
 		}
 		spec, ok := discovery.Sensors[r.Name]
@@ -281,7 +299,9 @@ func (m *MQTTSink) maybeAnnounce(readings []sml.Reading) {
 		if !t.WaitTimeout(5 * time.Second) {
 			return
 		}
+		m.mu.Lock()
 		m.discovered[r.Name] = true
+		m.mu.Unlock()
 	}
 }
 
@@ -328,7 +348,13 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 		m.bridge.EUI = u.Node.EUI
 		m.bridge.ProductModel = u.Node.ProductModel
 		m.bridge.NodeModel = u.Node.Model
+		// bridgeDiscovered is guarded by mu (the OnConnect handler resets it
+		// from the MQTT client goroutine), so take mu even while holding
+		// bridgeMu here. Lock order bridgeMu→mu is the only nesting; no path
+		// acquires them the other way round, so this can't deadlock.
+		m.mu.Lock()
 		m.bridgeDiscovered = map[string]bool{}
+		m.mu.Unlock()
 		m.reconcilePending = true
 		m.reconcileAttempts = 0
 	}
@@ -524,7 +550,10 @@ func otaSensors(e pulse.OTAEntry) []otaSensor {
 
 func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discovery.SensorSpec) {
 	for name := range values {
-		if m.bridgeDiscovered[name] {
+		m.mu.Lock()
+		seen := m.bridgeDiscovered[name]
+		m.mu.Unlock()
+		if seen {
 			continue
 		}
 		spec, ok := discovery.BridgeSensors[name]
@@ -544,7 +573,9 @@ func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discover
 		if !t.WaitTimeout(5 * time.Second) {
 			return
 		}
+		m.mu.Lock()
 		m.bridgeDiscovered[name] = true
+		m.mu.Unlock()
 	}
 }
 
