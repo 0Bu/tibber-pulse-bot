@@ -255,6 +255,32 @@ func TestBridgeStateHasDiscoverySpecs(t *testing.T) {
 	}
 }
 
+func TestReconcileSettled(t *testing.T) {
+	tests := []struct {
+		name            string
+		swept, haveOTA  bool
+		attempts, fails int
+		want            bool
+	}{
+		{"manifest reconciled settles at once", true, true, 1, 0, true},
+		{"ota-less waits out the grace", true, false, 1, 0, false},
+		{"ota-less waits mid-grace", true, false, reconcileOTALessSweeps - 1, 0, false},
+		{"ota-less settles after grace", true, false, reconcileOTALessSweeps, 0, true},
+		{"transient ota miss does not settle early", true, false, 3, 0, false},
+		{"single subscribe failure keeps trying", false, false, 1, 1, false},
+		{"repeated subscribe failure gives up", false, false, 2, reconcileMaxFailures, true},
+		{"hard cap backstops", false, false, reconcileMaxAttempts, 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := reconcileSettled(tt.swept, tt.haveOTA, tt.attempts, tt.fails); got != tt.want {
+				t.Errorf("reconcileSettled(%v,%v,%d,%d) = %v, want %v",
+					tt.swept, tt.haveOTA, tt.attempts, tt.fails, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestShort(t *testing.T) {
 	tests := []struct {
 		in   string

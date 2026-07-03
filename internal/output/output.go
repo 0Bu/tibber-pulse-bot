@@ -177,7 +177,42 @@ type MQTTSink struct {
 	// reconcileOldDev is the identity we transitioned away from.
 	reconcilePending  bool
 	reconcileAttempts int
+	reconcileFailures int // consecutive sweeps whose broker enumeration failed
 	reconcileOldDev   discovery.BridgeDevice
+}
+
+// Reconcile-settle thresholds. The broker reconcile re-enumerates retained
+// discovery configs after an identifier transition until one of these bounds
+// is hit; see reconcileSettled.
+const (
+	// A successful sweep that saw the OTA manifest reconciles current-identity
+	// OTA configs immediately. Firmware without OTA never delivers a manifest,
+	// so its old-identity sweep is trusted after this many successful sweeps —
+	// large enough to ride out a few transient /ota_manifest.json fetch misses
+	// before assuming the firmware is genuinely OTA-less.
+	reconcileOTALessSweeps = 5
+	// Stop reconciling once the broker enumeration has failed this many times
+	// in a row — a broker that denies the discovery-wildcard SUBSCRIBE will
+	// never succeed, so don't stall the publish path on it every cycle.
+	reconcileMaxFailures = 3
+	// Absolute backstop so no bridge/broker combination re-enumerates forever.
+	reconcileMaxAttempts = 10
+)
+
+// reconcileSettled reports whether the broker-reconcile loop can stop after a
+// sweep. Pure so the settle policy is unit-testable without a live broker.
+func reconcileSettled(swept, haveOTA bool, attempts, failures int) bool {
+	switch {
+	case swept && haveOTA:
+		return true // full manifest reconciled under the current identity
+	case swept && attempts >= reconcileOTALessSweeps:
+		return true // no manifest after a grace — assume OTA-less firmware
+	case failures >= reconcileMaxFailures:
+		return true // broker keeps refusing the enumeration; give up
+	case attempts >= reconcileMaxAttempts:
+		return true // hard backstop
+	}
+	return false
 }
 
 func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix string) (*MQTTSink, error) {
@@ -267,14 +302,12 @@ func (m *MQTTSink) maybeAnnounce(readings []sml.Reading) {
 			return // wait for next frame
 		}
 	}
-	// Snapshot the bridge identifier once for the whole batch (consistent
-	// via_device across all sensors of this frame, one lock instead of N).
-	m.bridgeMu.Lock()
-	via := ""
-	if m.bridge.Host != "" {
-		via = m.bridge.Identifier()
-	}
-	m.bridgeMu.Unlock()
+	// The bridge identifier (via_device) is snapshotted lazily on the first
+	// sensor that actually needs announcing, so the steady state — every
+	// telegram, all sensors already discovered — skips the lock and string
+	// build entirely. Snapshotted once so all sensors of this frame share a
+	// consistent via.
+	via, viaSet := "", false
 	for _, r := range readings {
 		if r.Name == "" {
 			continue
@@ -288,6 +321,14 @@ func (m *MQTTSink) maybeAnnounce(readings []sml.Reading) {
 		spec, ok := discovery.Sensors[r.Name]
 		if !ok {
 			continue // no HA metadata for this OBIS — skip discovery
+		}
+		if !viaSet {
+			m.bridgeMu.Lock()
+			if m.bridge.Host != "" {
+				via = m.bridge.Identifier()
+			}
+			m.bridgeMu.Unlock()
+			viaSet = true
 		}
 		stateTopic := m.prefix + "/" + r.Name
 		topic := discovery.ConfigTopic(m.discoveryPrefix, r.Name, m.device)
@@ -348,15 +389,21 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 		m.bridge.EUI = u.Node.EUI
 		m.bridge.ProductModel = u.Node.ProductModel
 		m.bridge.NodeModel = u.Node.Model
-		// bridgeDiscovered is guarded by mu (the OnConnect handler resets it
-		// from the MQTT client goroutine), so take mu even while holding
-		// bridgeMu here. Lock order bridgeMu→mu is the only nesting; no path
-		// acquires them the other way round, so this can't deadlock.
+		// bridgeDiscovered and discovered are guarded by mu (the OnConnect
+		// handler resets them from the MQTT client goroutine), so take mu even
+		// while holding bridgeMu here. Lock order bridgeMu→mu is the only
+		// nesting; no path acquires them the other way round, so this can't
+		// deadlock. discovered is reset too so meter sensors re-announce with a
+		// via_device pointing at the new identifier — otherwise a sensor first
+		// announced before the EUI was learned keeps a via link to the now-swept
+		// host-based bridge device.
 		m.mu.Lock()
 		m.bridgeDiscovered = map[string]bool{}
+		m.discovered = map[string]bool{}
 		m.mu.Unlock()
 		m.reconcilePending = true
 		m.reconcileAttempts = 0
+		m.reconcileFailures = 0
 	}
 	m.bridgeMu.Unlock()
 
@@ -370,12 +417,12 @@ func (m *MQTTSink) PublishBridgeUpdate(u BridgeUpdate) error {
 			// even across restarts.
 			swept := m.reconcileBridgeDiscovery(m.reconcileOldDev, u.OTA)
 			m.reconcileAttempts++
-			// Settle once a sweep actually ran (swept) and we either have a
-			// complete manifest or have retried a few times — so a transient
-			// subscribe failure doesn't abandon the old-identity sweep. The hard
-			// cap stops an OTA-less firmware or a broker that never allows the
-			// subscribe from re-enumerating every cycle forever.
-			if (swept && (len(u.OTA) > 0 || m.reconcileAttempts >= 3)) || m.reconcileAttempts >= 10 {
+			if swept {
+				m.reconcileFailures = 0
+			} else {
+				m.reconcileFailures++
+			}
+			if reconcileSettled(swept, len(u.OTA) > 0, m.reconcileAttempts, m.reconcileFailures) {
 				m.reconcilePending = false
 			}
 		}
@@ -695,20 +742,34 @@ func (m *MQTTSink) enumerateRetainedConfigs() (map[string]struct{}, bool) {
 		return copyStringSet(&mu, found), false
 	}
 	deadline := time.After(3 * time.Second)
-	quiet := time.NewTimer(500 * time.Millisecond)
-	defer quiet.Stop()
+	// Don't arm the short inter-message quiet window until the first retained
+	// config actually arrives: a loaded broker can take longer than the window
+	// to start replaying its retained store, and settling before then would
+	// return an empty set that the caller wrongly trusts as "nothing stale".
+	// Until first activity, only the hard deadline can end the sweep (a receive
+	// from a nil channel blocks forever).
+	var quiet *time.Timer
+	var quietC <-chan time.Time
 	for done := false; !done; {
 		select {
 		case <-activity:
-			if !quiet.Stop() {
-				<-quiet.C
+			if quiet == nil {
+				quiet = time.NewTimer(500 * time.Millisecond)
+				quietC = quiet.C
+			} else {
+				if !quiet.Stop() {
+					<-quiet.C
+				}
+				quiet.Reset(500 * time.Millisecond)
 			}
-			quiet.Reset(500 * time.Millisecond)
-		case <-quiet.C:
+		case <-quietC:
 			done = true
 		case <-deadline:
 			done = true
 		}
+	}
+	if quiet != nil {
+		quiet.Stop()
 	}
 	m.client.Unsubscribe(filter)
 	return copyStringSet(&mu, found), true
