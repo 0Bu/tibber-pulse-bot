@@ -277,6 +277,15 @@ grid sources directly). When the MSB later enables the extended EDL40
 profile (per-phase power, voltage, current, frequency), those entities
 appear in HA automatically — the bot announces newly seen sensors on the fly.
 
+When the bridge EUI is first learned (or changes), the bot reconciles the
+retained discovery configs against the broker to clear stale ones — for
+which it needs a **`SUBSCRIBE` grant on `<ha-discovery-prefix>/+/+/config`**
+in addition to publish. On a locked-down broker ACL that denies that
+subscribe, the bot can't enumerate the retained store and falls back to a
+publish-only sweep of the statically-known bridge topics under the departed
+identifier; dynamically-named per-OTA-component orphans are only cleared once
+the subscribe is granted.
+
 ## Stdout output
 
 - **No `--mqtt-host`**: full multi-line block per update (debug / interactive).

@@ -8,7 +8,9 @@ import (
 
 // Node mirrors one entry of /nodes.json.
 type Node struct {
-	NodeID              int    `json:"node_id"`
+	// Pointer so an absent node_id stays nil and is dropped by the publisher
+	// rather than surfacing as a phantom-0 HA sensor (see Metrics identifiers).
+	NodeID              *int   `json:"node_id"`
 	EUI                 string `json:"eui"`
 	ProductModel        string `json:"product_model"`
 	Model               string `json:"model"`
@@ -66,7 +68,7 @@ func (c *Client) FetchNode(ctx context.Context) (Node, error) {
 		return Node{}, fmt.Errorf("nodes decode: %w", err)
 	}
 	for _, n := range nodes {
-		if n.NodeID == c.nodeID {
+		if n.NodeID != nil && *n.NodeID == c.nodeID {
 			return n, nil
 		}
 	}
