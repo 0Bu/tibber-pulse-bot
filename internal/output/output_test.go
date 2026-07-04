@@ -1,10 +1,17 @@
 package output
 
 import (
+	"encoding/json"
+	"errors"
+	"sync"
 	"testing"
+	"time"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/0Bu/tibber-pulse-bot/internal/discovery"
 	"github.com/0Bu/tibber-pulse-bot/internal/pulse"
+	"github.com/0Bu/tibber-pulse-bot/internal/sml"
 )
 
 func TestFormatStatePayload(t *testing.T) {
@@ -298,5 +305,189 @@ func TestShort(t *testing.T) {
 		if got := short(tt.in); got != tt.want {
 			t.Errorf("short(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+// --- meter via_device lifecycle (regression for #71) --------------------
+
+// errFakeNoSub makes the fake broker's SUBSCRIBE fail so the reconcile sweep
+// inside PublishBridgeUpdate bails immediately instead of blocking on the 3s
+// retained-enumeration deadline — the sweep is irrelevant to what these tests
+// assert (the meter via_device), so short-circuiting it keeps them fast.
+var errFakeNoSub = errors.New("fake: subscribe unsupported")
+
+type fakeToken struct{ err error }
+
+func (t *fakeToken) Wait() bool                     { return true }
+func (t *fakeToken) WaitTimeout(time.Duration) bool { return true }
+func (t *fakeToken) Done() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+func (t *fakeToken) Error() error { return t.err }
+
+// fakeMQTTClient records the last payload published to each topic so a test
+// can inspect the discovery configs the sink emits. Subscribe fails on purpose
+// (see errFakeNoSub); the remaining interface methods are unused no-ops.
+type fakeMQTTClient struct {
+	mu        sync.Mutex
+	published map[string]string
+}
+
+func newFakeMQTTClient() *fakeMQTTClient {
+	return &fakeMQTTClient{published: map[string]string{}}
+}
+
+func (c *fakeMQTTClient) payload(topic string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	p, ok := c.published[topic]
+	return p, ok
+}
+
+func (c *fakeMQTTClient) Publish(topic string, _ byte, _ bool, payload any) mqtt.Token {
+	c.mu.Lock()
+	switch p := payload.(type) {
+	case string:
+		c.published[topic] = p
+	case []byte:
+		c.published[topic] = string(p)
+	}
+	c.mu.Unlock()
+	return &fakeToken{}
+}
+
+func (c *fakeMQTTClient) Subscribe(string, byte, mqtt.MessageHandler) mqtt.Token {
+	return &fakeToken{err: errFakeNoSub}
+}
+func (c *fakeMQTTClient) Unsubscribe(...string) mqtt.Token { return &fakeToken{} }
+func (c *fakeMQTTClient) Disconnect(uint)                  {}
+
+func (c *fakeMQTTClient) IsConnected() bool      { return true }
+func (c *fakeMQTTClient) IsConnectionOpen() bool { return true }
+func (c *fakeMQTTClient) Connect() mqtt.Token    { return &fakeToken{} }
+func (c *fakeMQTTClient) SubscribeMultiple(map[string]byte, mqtt.MessageHandler) mqtt.Token {
+	return &fakeToken{}
+}
+func (c *fakeMQTTClient) AddRoute(string, mqtt.MessageHandler)    {}
+func (c *fakeMQTTClient) OptionsReader() mqtt.ClientOptionsReader { return mqtt.ClientOptionsReader{} }
+
+// meterVia returns the device.via_device of the retained discovery config the
+// sink published for one meter sensor, and whether that config exists at all.
+func meterVia(t *testing.T, fc *fakeMQTTClient, serial, sensor string) (string, bool) {
+	t.Helper()
+	topic := discovery.ConfigTopic("homeassistant", sensor, discovery.Device{MeterSerial: serial})
+	raw, ok := fc.payload(topic)
+	if !ok {
+		return "", false
+	}
+	var cfg struct {
+		Device struct {
+			ViaDevice string `json:"via_device"`
+		} `json:"device"`
+	}
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal meter config for %s: %v", sensor, err)
+	}
+	return cfg.Device.ViaDevice, true
+}
+
+func newDiscoverySink(fc *fakeMQTTClient, host string) *MQTTSink {
+	m := &MQTTSink{
+		client:           fc,
+		prefix:           "tibber/pulse",
+		discoveryPrefix:  "homeassistant",
+		discovered:       map[string]bool{},
+		bridgeDiscovered: map[string]bool{},
+	}
+	m.SetBridgeHost(host)
+	return m
+}
+
+// TestMeterViaDeviceReannouncesOnEUILearn is the regression guard for #71: a
+// meter announced before the bridge EUI is known links via the host-based
+// bridge id, and once the EUI is learned the meter re-announces with a
+// via_device pointing at the EUI-based bridge device that actually gets
+// published — never leaving HA on "Connected via Unnamed device".
+func TestMeterViaDeviceReannouncesOnEUILearn(t *testing.T) {
+	fc := newFakeMQTTClient()
+	m := newDiscoverySink(fc, "192.168.1.5")
+
+	const serial = "LGZ-81199038"
+	readings := []sml.Reading{
+		{Name: "meter_serial", Raw: serial},
+		{Name: "manufacturer", Raw: "LGZ"},
+		{Name: "power_total", Value: 3, Unit: "W"},
+	}
+
+	// Before the EUI is learned the meter links to the host-based bridge id.
+	m.maybeAnnounce(readings)
+	via, ok := meterVia(t, fc, serial, "power_total")
+	if !ok {
+		t.Fatal("meter config not published before EUI learn")
+	}
+	if want := "tibber-pulse-bridge-192_168_1_5"; via != want {
+		t.Fatalf("via_device before EUI = %q, want host-based %q", via, want)
+	}
+
+	// EUI arrives on the metrics path — the identifier transition must reset
+	// the meter announce latch so the next frame re-announces.
+	if err := m.PublishBridgeUpdate(BridgeUpdate{
+		Node: &pulse.Node{NodeID: 1, EUI: "30FB10FFFE9326A9"},
+	}); err != nil {
+		t.Fatalf("PublishBridgeUpdate: %v", err)
+	}
+
+	// Next meter frame re-announces with the EUI-based via_device.
+	m.maybeAnnounce(readings)
+	via, _ = meterVia(t, fc, serial, "power_total")
+	if want := "tibber-pulse-bridge-30fb10fffe9326a9"; via != want {
+		t.Fatalf("via_device after EUI = %q, want EUI-based %q", via, want)
+	}
+
+	// The bridge device that via_device now names must actually exist on the
+	// broker (announceBridge published it under the same id), else the link
+	// would dangle exactly as #71 describes.
+	bridgeCfg := discovery.BridgeConfigTopic("homeassistant", "rssi",
+		discovery.BridgeSensors["rssi"],
+		discovery.BridgeDevice{Host: "192.168.1.5", EUI: "30FB10FFFE9326A9"})
+	if _, ok := fc.payload(bridgeCfg); !ok {
+		t.Fatal("EUI-based bridge device never published — meter via_device would dangle")
+	}
+}
+
+// TestMeterAnnouncesWithoutEUI covers #71 acceptance criterion 2: a bridge
+// whose /nodes.json never yields an EUI still gets its meter entities into HA,
+// linked via the host-based bridge id (the only id published in that case).
+func TestMeterAnnouncesWithoutEUI(t *testing.T) {
+	fc := newFakeMQTTClient()
+	m := newDiscoverySink(fc, "10.0.0.9")
+
+	// Bridge metrics publish with no Node (/nodes.json never succeeds), so no
+	// identifier transition fires and the bridge announces under its host id.
+	if err := m.PublishBridgeUpdate(BridgeUpdate{}); err != nil {
+		t.Fatalf("PublishBridgeUpdate: %v", err)
+	}
+
+	m.maybeAnnounce([]sml.Reading{
+		{Name: "meter_serial", Raw: "LGZ-1"},
+		{Name: "power_total", Value: 1, Unit: "W"},
+	})
+
+	via, ok := meterVia(t, fc, "LGZ-1", "power_total")
+	if !ok {
+		t.Fatal("meter entity not announced when bridge has no EUI")
+	}
+	if want := "tibber-pulse-bridge-10_0_0_9"; via != want {
+		t.Fatalf("via_device = %q, want host-based %q", via, want)
+	}
+
+	// The host-based bridge device the meter links to must actually exist,
+	// else criterion 2 degrades into the same dangling link #71 describes.
+	bridgeCfg := discovery.BridgeConfigTopic("homeassistant", "rssi",
+		discovery.BridgeSensors["rssi"], discovery.BridgeDevice{Host: "10.0.0.9"})
+	if _, ok := fc.payload(bridgeCfg); !ok {
+		t.Fatal("host-based bridge device never published — meter via_device would dangle")
 	}
 }
