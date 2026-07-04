@@ -207,6 +207,29 @@ done:
   [`internal/sml/parse.go`](internal/sml/parse.go) `obisNames`. Adding a
   new OBIS code without a discovery entry means HA won't surface it.
 
+## Quality tooling (`.claude/`)
+
+The repo ships its own Claude Code config so the rules above are enforced, not
+just written down:
+
+- **Skills**: `verify` (static gates + helm render + e2e), `release` (drive the
+  release pipeline), `project-audit` (find doc drift / cross-file
+  inconsistencies — run it before a merge or whenever docs may have drifted).
+- **Agents**: `secret-scanner` (pre-push credential + `.gitignore` audit),
+  `go-reviewer` (diff vs the conventions CI can't see).
+- **Hooks** (`settings.json` + `.claude/hooks/`): block `.env` edits; `gofmt -w`
+  on save; a **pre-push secret gate**; and a **pre-merge review gate** that
+  blocks a PR merge (the GitHub MCP `merge_pull_request` / `enable_pr_auto_merge`
+  tools) until a review is recorded for the merged commit. After running
+  `/code-review` + `project-audit`
+  clean, record approval with
+  `bash .claude/hooks/pre-merge-review-gate.sh --approve`, then retry the merge.
+  The gate only covers merges Claude performs — for GitHub-UI merges use branch
+  protection and a required check.
+
+CI mirrors the enforceable subset: `test.yml` runs gofmt / vet / go test **and**
+`helm lint` + a render of all three password modes on every PR.
+
 ## Out-of-scope reminders for future work
 
 - Adding HAN/SMGW (Smart Meter Gateway) support is a different protocol

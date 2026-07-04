@@ -29,3 +29,4 @@ chart/Chart.lock
 !.claude/settings.json
 !.claude/skills/
 !.claude/agents/
+!.claude/hooks/

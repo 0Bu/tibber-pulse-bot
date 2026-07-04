@@ -1,10 +1,11 @@
 name: test
 
-# Always-on correctness gate (gofmt/vet/go test). Deliberately has NO paths
-# filter so the `test` check reports on every PR — including doc/chart/
-# workflow-only PRs — which lets it be a required status check on main
-# without ever leaving a required check permanently pending. The heavier
-# docker build stays path-filtered in docker.yml.
+# Always-on correctness gate: Go (gofmt/vet/go test) plus a Helm chart
+# lint/render. Deliberately has NO paths filter so these checks report on
+# every PR — including doc/chart/workflow-only PRs — which lets them be
+# required status checks on main without ever leaving a required check
+# permanently pending. The heavier docker build stays path-filtered in
+# docker.yml.
 on:
   pull_request:
     branches: [main]
@@ -36,3 +37,51 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test ./...
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # Helm ships in the ubuntu-latest runner image, so there is no extra
+      # action to pin. `helm version` fails the job loudly if that ever changes.
+      - name: helm version
+        run: helm version --short
+      - name: lint
+        run: helm lint chart
+      # Render each of the three mutually exclusive password modes. Dummy
+      # host/password values only — never a real bridge secret.
+      - name: template (inline password)
+        run: |
+          helm template r chart \
+            --set pulse.host=192.0.2.10 \
+            --set mqtt.host=mosquitto.default.svc.cluster.local \
+            --set pulse.password=dummy-9char >/dev/null
+      - name: template (sealed secret)
+        run: |
+          helm template r chart \
+            --set pulse.host=192.0.2.10 \
+            --set mqtt.host=mosquitto.default.svc.cluster.local \
+            --set pulse.sealedSecret.encryptedPassword=AgADUMMYCIPHERTEXT >/dev/null
+      - name: template (existing secret)
+        run: |
+          helm template r chart \
+            --set pulse.host=192.0.2.10 \
+            --set mqtt.host=mosquitto.default.svc.cluster.local \
+            --set pulse.existingSecret=tibber-pulse-secret >/dev/null
+      # Negative tests: the `fail` guards must reject a misconfigured release.
+      # A successful render here means a guard regressed.
+      - name: fail guards reject misconfiguration
+        run: |
+          if helm template r chart \
+               --set pulse.host=192.0.2.10 \
+               --set mqtt.host=mosquitto.default.svc.cluster.local >/dev/null 2>&1; then
+            echo "::error::chart rendered with no password mode set — the password fail guard regressed"
+            exit 1
+          fi
+          if helm template r chart \
+               --set mqtt.host=mosquitto.default.svc.cluster.local \
+               --set pulse.password=dummy-9char >/dev/null 2>&1; then
+            echo "::error::chart rendered with no pulse.host set — the host fail guard regressed"
+            exit 1
+          fi
+          echo "fail guards: OK (both misconfigurations rejected)"
