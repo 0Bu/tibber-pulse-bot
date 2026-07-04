@@ -18,14 +18,19 @@ type Metrics struct {
 	Temperature          float64 `json:"node_temperature"`
 	AvgRSSI              float64 `json:"node_avg_rssi"`
 	AvgLQI               float64 `json:"node_avg_lqi"`
-	RadioTxPower         int     `json:"radio_tx_power"`
 	UptimeMS             int64   `json:"node_uptime_ms"`
 	MeterMsgCountSent    int     `json:"meter_msg_count_sent"`
 	MeterPkgCountSent    int     `json:"meter_pkg_count_sent"`
 	InvalidMeterReadings int     `json:"invalid_meter_readings_count"`
-	MeterMode            int     `json:"meter_mode"`
-	BootloaderVersion    int64   `json:"bootloader_version"`
-	ProductID            int     `json:"product_id"`
+
+	// Integer identifier fields are pointers so an absent key stays nil and is
+	// dropped by the publisher, instead of decoding to a phantom 0 that would
+	// get a retained HA discovery config indistinguishable from a genuine 0.
+	// Counters above stay non-pointer — they legitimately start at 0.
+	RadioTxPower      *int   `json:"radio_tx_power"`
+	MeterMode         *int   `json:"meter_mode"`
+	BootloaderVersion *int64 `json:"bootloader_version"`
+	ProductID         *int   `json:"product_id"`
 
 	// hub_attachments: bridge-side counters
 	MeterPkgCountRecv        int    `json:"meter_pkg_count_recv"`

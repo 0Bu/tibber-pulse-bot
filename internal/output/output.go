@@ -485,7 +485,6 @@ func bridgeState(u BridgeUpdate) (map[string]any, map[string]discovery.SensorSpe
 		"temperature":                m.Temperature,
 		"rssi":                       m.AvgRSSI,
 		"lqi":                        m.AvgLQI,
-		"radio_tx_power":             float64(m.RadioTxPower),
 		"uptime":                     float64(m.UptimeMS) / 1000.0,
 		"meter_msg_sent":             m.MeterMsgCountSent,
 		"pkg_sent":                   float64(m.MeterPkgCountSent),
@@ -494,13 +493,28 @@ func bridgeState(u BridgeUpdate) (map[string]any, map[string]discovery.SensorSpe
 		"corrupt_readings":           float64(m.MeterCorruptCountRecv),
 		"invalid_readings":           float64(m.InvalidMeterReadings),
 		"compression_error_readings": m.CompressionErrorReadings,
-		"meter_mode":                 m.MeterMode,
-		"bootloader_version":         m.BootloaderVersion,
-		"product_id":                 m.ProductID,
 		"node_version":               m.NodeVersion,
 	}
+	// Integer identifier fields are only published when the endpoint actually
+	// returned them (pointer non-nil); an absent key must not surface as a
+	// retained phantom-0 HA sensor. A genuine 0 has a non-nil pointer and is
+	// published normally.
+	if m.RadioTxPower != nil {
+		out["radio_tx_power"] = float64(*m.RadioTxPower)
+	}
+	if m.MeterMode != nil {
+		out["meter_mode"] = *m.MeterMode
+	}
+	if m.BootloaderVersion != nil {
+		out["bootloader_version"] = *m.BootloaderVersion
+	}
+	if m.ProductID != nil {
+		out["product_id"] = *m.ProductID
+	}
 	if n := u.Node; n != nil {
-		out["node_id"] = n.NodeID
+		if n.NodeID != nil {
+			out["node_id"] = *n.NodeID
+		}
 		out["eui"] = n.EUI
 		out["product_model"] = n.ProductModel
 		out["model"] = n.Model
@@ -638,6 +652,14 @@ func (m *MQTTSink) announceBridge(values map[string]any, dyn map[string]discover
 func (m *MQTTSink) reconcileBridgeDiscovery(oldDev discovery.BridgeDevice, ota []pulse.OTAEntry) bool {
 	observed, ok := m.enumerateRetainedConfigs()
 	if !ok {
+		// The discovery-wildcard SUBSCRIBE was refused (a locked-down broker
+		// ACL that grants publish under the prefix but denies subscribe), so we
+		// can't read the retained store to diff against. Fall back to a
+		// publish-only sweep of the statically-known bridge topics under the
+		// departed identity — exactly what cleanup could do before the reconcile
+		// existed. Dynamic per-OTA orphans can't be cleared blind and are left
+		// for a broker that grants the subscribe.
+		m.sweepStaticBridgeConfigs(oldDev)
 		return false
 	}
 	desired := m.desiredBridgeTopics(ota)
@@ -648,6 +670,24 @@ func (m *MQTTSink) reconcileBridgeDiscovery(oldDev discovery.BridgeDevice, ota [
 		_ = m.client.Publish(topic, 0, true, "")
 	}
 	return true
+}
+
+// sweepStaticBridgeConfigs clears the retained discovery configs for every
+// static BridgeSensors entry under the departed identity, using publish-only
+// access. It is the fallback when the broker denies the enumeration SUBSCRIBE:
+// blind but safe, because it only clears our own previous identifier's topics
+// and clearing an absent retained config is a broker no-op. Guarded so it never
+// runs when the identity hasn't actually changed (which would wipe the live
+// device's own configs). Idempotent, so repeating it across the few settle
+// cycles is harmless.
+func (m *MQTTSink) sweepStaticBridgeConfigs(oldDev discovery.BridgeDevice) {
+	if oldDev.Identifier() == m.bridge.Identifier() {
+		return
+	}
+	for name, spec := range discovery.BridgeSensors {
+		topic := discovery.BridgeConfigTopic(m.discoveryPrefix, name, spec, oldDev)
+		_ = m.client.Publish(topic, 0, true, "")
+	}
 }
 
 // desiredBridgeTopics is the set of discovery config topics that should exist
