@@ -464,6 +464,12 @@ func TestMeterAnnouncesWithoutEUI(t *testing.T) {
 	fc := newFakeMQTTClient()
 	m := newDiscoverySink(fc, "10.0.0.9")
 
+	// Bridge metrics publish with no Node (/nodes.json never succeeds), so no
+	// identifier transition fires and the bridge announces under its host id.
+	if err := m.PublishBridgeUpdate(BridgeUpdate{}); err != nil {
+		t.Fatalf("PublishBridgeUpdate: %v", err)
+	}
+
 	m.maybeAnnounce([]sml.Reading{
 		{Name: "meter_serial", Raw: "LGZ-1"},
 		{Name: "power_total", Value: 1, Unit: "W"},
@@ -475,5 +481,13 @@ func TestMeterAnnouncesWithoutEUI(t *testing.T) {
 	}
 	if want := "tibber-pulse-bridge-10_0_0_9"; via != want {
 		t.Fatalf("via_device = %q, want host-based %q", via, want)
+	}
+
+	// The host-based bridge device the meter links to must actually exist,
+	// else criterion 2 degrades into the same dangling link #71 describes.
+	bridgeCfg := discovery.BridgeConfigTopic("homeassistant", "rssi",
+		discovery.BridgeSensors["rssi"], discovery.BridgeDevice{Host: "10.0.0.9"})
+	if _, ok := fc.payload(bridgeCfg); !ok {
+		t.Fatal("host-based bridge device never published — meter via_device would dangle")
 	}
 }
