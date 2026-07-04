@@ -14,6 +14,10 @@ import (
 	"github.com/0Bu/tibber-pulse-bot/internal/sml"
 )
 
+// ptr boxes a value so the pointer-typed presence-tracked identifier fields
+// (Metrics.MeterMode, Node.NodeID, …) can be set inline in test fixtures.
+func ptr[T any](v T) *T { return &v }
+
 func TestFormatStatePayload(t *testing.T) {
 	tests := []struct {
 		name string
@@ -49,12 +53,12 @@ func TestBridgeState(t *testing.T) {
 
 	u := BridgeUpdate{
 		Metrics: pulse.Metrics{
-			BatteryVoltage: 3.3, RadioTxPower: 14, MeterMode: 2,
-			ProductID: 7, NodeVersion: "n9",
+			BatteryVoltage: 3.3, RadioTxPower: ptr(14), MeterMode: ptr(2),
+			ProductID: ptr(7), NodeVersion: "n9",
 			MeterMsgCountSent: 42, CompressionErrorReadings: 3,
 		},
 		Node: &pulse.Node{
-			NodeID: 1, EUI: "30FB10FFFE9326A9", Model: "node-efr32",
+			NodeID: ptr(1), EUI: "30FB10FFFE9326A9", Model: "node-efr32",
 			Version: "", Available: true, Paired: true, AverageRSSI: -70,
 		},
 		Status: &st,
@@ -109,6 +113,55 @@ func TestBridgeState(t *testing.T) {
 	// bridge up_time is 10ms FreeRTOS ticks → seconds (÷100), not raw/ms
 	if v, ok := values["bridge_uptime"].(float64); !ok || v != 123.45 {
 		t.Errorf("bridge_uptime = %v (%T), want float64 123.45", values["bridge_uptime"], values["bridge_uptime"])
+	}
+}
+
+// TestBridgeStatePhantomZero is the regression guard for #66: an integer
+// identifier field the firmware omits (nil pointer) must be dropped, not
+// published as a phantom "0" that would earn a permanent retained HA entity.
+// A field genuinely present with value 0 must still be published, and counters
+// that legitimately start at 0 keep publishing.
+func TestBridgeStatePhantomZero(t *testing.T) {
+	// Firmware omits every pointer identifier (all nil), reports a genuine 0
+	// only for node_id, and a 0 counter.
+	u := BridgeUpdate{
+		Metrics: pulse.Metrics{BatteryVoltage: 3.3, MeterPkgCountSent: 0},
+		Node:    &pulse.Node{NodeID: ptr(0), EUI: "30FB10FFFE9326A9"},
+	}
+	values, _ := bridgeState(u)
+
+	// Absent identifiers must not appear at all.
+	for _, k := range []string{"radio_tx_power", "meter_mode", "bootloader_version", "product_id"} {
+		if _, ok := values[k]; ok {
+			t.Errorf("absent identifier %q was published (phantom zero)", k)
+		}
+	}
+	// A genuine 0 identifier is published.
+	if v, ok := values["node_id"].(int); !ok || v != 0 {
+		t.Errorf("node_id = %v (%T), want int 0 (present-0 must publish)", values["node_id"], values["node_id"])
+	}
+	// A counter legitimately at 0 keeps publishing.
+	if v, ok := values["pkg_sent"].(float64); !ok || v != 0 {
+		t.Errorf("pkg_sent = %v (%T), want float64 0", values["pkg_sent"], values["pkg_sent"])
+	}
+
+	// When present, the identifiers publish their real value (including a 0).
+	u2 := BridgeUpdate{Metrics: pulse.Metrics{
+		RadioTxPower: ptr(0), MeterMode: ptr(0),
+		BootloaderVersion: ptr(int64(0)), ProductID: ptr(7),
+	}}
+	v2, _ := bridgeState(u2)
+	if v, ok := v2["meter_mode"].(int); !ok || v != 0 {
+		t.Errorf("present meter_mode = %v (%T), want int 0", v2["meter_mode"], v2["meter_mode"])
+	}
+	if v, ok := v2["radio_tx_power"].(float64); !ok || v != 0 {
+		t.Errorf("present radio_tx_power = %v (%T), want float64 0", v2["radio_tx_power"], v2["radio_tx_power"])
+	}
+	if v, ok := v2["bootloader_version"].(int64); !ok || v != 0 {
+		t.Errorf("present bootloader_version = %v (%T), want int64 0", v2["bootloader_version"], v2["bootloader_version"])
+	}
+	if v, ok := v2["product_id"].(int); !ok || v != 7 {
+		t.Errorf("present product_id = %v (%T), want int 7", v2["product_id"], v2["product_id"])
 	}
 }
 
@@ -218,14 +271,14 @@ func TestBridgeStateHasDiscoverySpecs(t *testing.T) {
 	u := BridgeUpdate{
 		Metrics: pulse.Metrics{
 			BatteryVoltage: 3.3, Temperature: 21, AvgRSSI: -60, AvgLQI: 200,
-			RadioTxPower: 14, UptimeMS: 1000, MeterMsgCountSent: 1,
-			MeterPkgCountSent: 1, InvalidMeterReadings: 0, MeterMode: 2,
-			BootloaderVersion: 5, ProductID: 7, MeterPkgCountRecv: 1,
+			RadioTxPower: ptr(14), UptimeMS: 1000, MeterMsgCountSent: 1,
+			MeterPkgCountSent: 1, InvalidMeterReadings: 0, MeterMode: ptr(2),
+			BootloaderVersion: ptr(int64(5)), ProductID: ptr(7), MeterPkgCountRecv: 1,
 			MeterReadingCountRecv: 1, MeterCorruptCountRecv: 0,
 			CompressionErrorReadings: 0, NodeVersion: "n9",
 		},
 		Node: &pulse.Node{
-			NodeID: 1, EUI: "30FB10FFFE9326A9", ProductModel: "TFD01",
+			NodeID: ptr(1), EUI: "30FB10FFFE9326A9", ProductModel: "TFD01",
 			Model: "node-efr32", Version: "v1", Available: true,
 			LastSeenMS: 1000, LastDataMS: 1000, AverageRSSI: -70,
 			AverageLQI: 180, OTADistributeStatus: "idle", Paired: true,
@@ -434,7 +487,7 @@ func TestMeterViaDeviceReannouncesOnEUILearn(t *testing.T) {
 	// EUI arrives on the metrics path — the identifier transition must reset
 	// the meter announce latch so the next frame re-announces.
 	if err := m.PublishBridgeUpdate(BridgeUpdate{
-		Node: &pulse.Node{NodeID: 1, EUI: "30FB10FFFE9326A9"},
+		Node: &pulse.Node{NodeID: ptr(1), EUI: "30FB10FFFE9326A9"},
 	}); err != nil {
 		t.Fatalf("PublishBridgeUpdate: %v", err)
 	}
@@ -489,5 +542,41 @@ func TestMeterAnnouncesWithoutEUI(t *testing.T) {
 		discovery.BridgeSensors["rssi"], discovery.BridgeDevice{Host: "10.0.0.9"})
 	if _, ok := fc.payload(bridgeCfg); !ok {
 		t.Fatal("host-based bridge device never published — meter via_device would dangle")
+	}
+}
+
+// TestReconcileFallbackSweepsStaticConfigsWhenSubscribeDenied is the guard for
+// #67's subscribe-denied fallback: when the broker refuses the discovery
+// wildcard SUBSCRIBE (fakeMQTTClient.Subscribe returns errFakeNoSub), the
+// identifier-transition reconcile can't enumerate the retained store, so it
+// falls back to a publish-only sweep — clearing the static bridge configs under
+// the departed identity — instead of silently doing nothing. The live identity's
+// own configs must survive.
+func TestReconcileFallbackSweepsStaticConfigsWhenSubscribeDenied(t *testing.T) {
+	fc := newFakeMQTTClient()
+	m := newDiscoverySink(fc, "192.168.1.5")
+
+	// First EUI learn: the departed identity is the host-based v1.0.4 id.
+	if err := m.PublishBridgeUpdate(BridgeUpdate{
+		Node: &pulse.Node{NodeID: ptr(1), EUI: "30FB10FFFE9326A9"},
+	}); err != nil {
+		t.Fatalf("PublishBridgeUpdate: %v", err)
+	}
+
+	// A static bridge config under the OLD host-based id must be cleared (empty
+	// retained payload) by the publish-only fallback sweep.
+	oldTopic := discovery.BridgeConfigTopic("homeassistant", "rssi",
+		discovery.BridgeSensors["rssi"], discovery.BridgeDevice{Host: "192.168.1.5"})
+	if p, ok := fc.payload(oldTopic); !ok || p != "" {
+		t.Errorf("old-id static config %q = %q (published=%v), want cleared to \"\"", oldTopic, p, ok)
+	}
+
+	// The live EUI-based config must NOT be cleared — announceBridge published
+	// it with content this same cycle.
+	newTopic := discovery.BridgeConfigTopic("homeassistant", "rssi",
+		discovery.BridgeSensors["rssi"],
+		discovery.BridgeDevice{Host: "192.168.1.5", EUI: "30FB10FFFE9326A9"})
+	if p, ok := fc.payload(newTopic); !ok || p == "" {
+		t.Errorf("live EUI-based config %q was cleared or missing (payload=%q, published=%v)", newTopic, p, ok)
 	}
 }
