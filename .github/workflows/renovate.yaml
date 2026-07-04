@@ -14,6 +14,16 @@ jobs:
     steps:
       - uses: renovatebot/github-action@dd5302ec17783b2fc721b19ae7209b57b1587765 # v46.1.17
         with:
+          # RENOVATE_TOKEN must be a PAT that can BOTH push branches AND open
+          # pull requests. Symptom of an under-scoped token: Renovate pushes
+          # renovate/* branches but opens zero PRs (and may log "Error updating
+          # branch: update failure"). Required scopes:
+          #   - classic PAT: `repo` + `workflow`, or
+          #   - fine-grained PAT (this repo): Contents RW, Pull requests RW,
+          #     Workflows RW.
+          # `workflow` is needed because config:best-practices +
+          # pinGitHubActionDigests let Renovate edit .github/workflows/**.
+          # Verify the PR flow via the Dependency Dashboard issue Renovate opens.
           token: ${{ secrets.RENOVATE_TOKEN }}
         env:
           RENOVATE_PLATFORM: github
