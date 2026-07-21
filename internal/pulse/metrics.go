@@ -8,36 +8,13 @@ import (
 
 // Metrics is the parsed JSON from /metrics.json?node_id=N.
 //
-// Field names mirror the bridge wire format (snake_case). All numeric
-// fields stay as the bridge sends them — float64 for voltages/RSSI, int
-// for counters. The two outer sections (`node_status`, `hub_attachments`)
-// are flattened in the Go struct to keep callers terse.
+// Only fields used by the reduced diagnostics document are decoded. Unknown
+// JSON fields are intentionally ignored instead of becoming MQTT/HA noise.
 type Metrics struct {
-	// node_status: hardware/radio metrics from the ESP32 plugged into the meter
-	BatteryVoltage       float64 `json:"node_battery_voltage"`
-	Temperature          float64 `json:"node_temperature"`
-	AvgRSSI              float64 `json:"node_avg_rssi"`
-	AvgLQI               float64 `json:"node_avg_lqi"`
-	UptimeMS             int64   `json:"node_uptime_ms"`
-	MeterMsgCountSent    int     `json:"meter_msg_count_sent"`
-	MeterPkgCountSent    int     `json:"meter_pkg_count_sent"`
-	InvalidMeterReadings int     `json:"invalid_meter_readings_count"`
-
-	// Integer identifier fields are pointers so an absent key stays nil and is
-	// dropped by the publisher, instead of decoding to a phantom 0 that would
-	// get a retained HA discovery config indistinguishable from a genuine 0.
-	// Counters above stay non-pointer — they legitimately start at 0.
-	RadioTxPower      *int   `json:"radio_tx_power"`
-	MeterMode         *int   `json:"meter_mode"`
-	BootloaderVersion *int64 `json:"bootloader_version"`
-	ProductID         *int   `json:"product_id"`
-
-	// hub_attachments: bridge-side counters
-	MeterPkgCountRecv        int    `json:"meter_pkg_count_recv"`
-	MeterReadingCountRecv    int    `json:"meter_reading_count_recv"`
-	MeterCorruptCountRecv    int    `json:"meter_corrupt_reading_count_recv"`
-	CompressionErrorReadings int    `json:"compression_error_readings_count"`
-	NodeVersion              string `json:"node_version"`
+	BatteryVoltage        float64 `json:"node_battery_voltage"`
+	Temperature           float64 `json:"node_temperature"`
+	AvgRSSI               float64 `json:"node_avg_rssi"`
+	MeterCorruptCountRecv int     `json:"meter_corrupt_reading_count_recv"`
 }
 
 // metricsEnvelope matches the on-the-wire shape with the two outer
@@ -59,14 +36,9 @@ func (c *Client) FetchMetrics(ctx context.Context) (Metrics, error) {
 	if err := json.Unmarshal(body, &env); err != nil {
 		return Metrics{}, fmt.Errorf("metrics decode: %w (%d bytes)", err, len(body))
 	}
-	// Merge the two wire sections into one flat struct. node_status carries
-	// the radio/hardware fields; the recv/corrupt/compression counters and
-	// node_version live only in hub_attachments, so take them verbatim.
+	// The hardware fields live in node_status; the corrupt-reading counter is
+	// reported in hub_attachments.
 	m := env.NodeStatus
-	m.MeterPkgCountRecv = env.HubAttachments.MeterPkgCountRecv
-	m.MeterReadingCountRecv = env.HubAttachments.MeterReadingCountRecv
 	m.MeterCorruptCountRecv = env.HubAttachments.MeterCorruptCountRecv
-	m.CompressionErrorReadings = env.HubAttachments.CompressionErrorReadings
-	m.NodeVersion = env.HubAttachments.NodeVersion
 	return m, nil
 }

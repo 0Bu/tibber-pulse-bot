@@ -25,7 +25,7 @@ func NewClient(host, password string, nodeID int) *Client {
 }
 
 // get issues an authenticated GET against the bridge and returns the raw
-// response body. Shared by every endpoint (data/metrics/nodes/status/ota);
+// response body. Shared by every endpoint (data/metrics/nodes/status);
 // the payload may be binary SML or JSON depending on the URL.
 func (c *Client) get(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

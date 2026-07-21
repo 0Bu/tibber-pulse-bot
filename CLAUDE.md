@@ -149,12 +149,15 @@ distributable as a public GitHub project.
 
 ## MQTT topic naming
 
-- Known OBIS values → `<topic-prefix>/<name>` (e.g. `tibber/pulse/power_total`,
-  `tibber/pulse/energy_import_total`, `tibber/pulse/meter_serial`).
-- Unknown OBIS → `<topic-prefix>/obis/<code>` with `*` replaced by `_`.
-- Numeric values: `%.3f` formatted, no unit suffix in payload (the topic
-  name implies the unit). String values (manufacturer, serial, device_id):
-  raw string.
+- One JSON document per SML telegram → `<topic-prefix>/readings`. Known OBIS
+  values are top-level fields; unknown values live under the nested `obis`
+  object with their original code as key.
+- One reduced bridge-health JSON document → `<topic-prefix>/diagnostics` every
+  `--metrics-interval`. It contains only availability, last-data age, both
+  RSSIs, battery voltage, temperature, and corrupt-reading count.
+- Do not reintroduce per-value state topics. HA discovery configs remain one
+  retained topic per entity because those are registry configuration, not
+  live state.
 
 ## Security
 
@@ -182,7 +185,8 @@ done:
    expect ≥ 5 readings per frame, including `meter_serial`.
 2. **MQTT round-trip**: run the bot with `--mqtt-host` and a separate
    `mosquitto_sub` (or equivalent) subscribed to `tibber/pulse/#`. Verify
-   live `power_total` updates ~every 2–4 s.
+   `tibber/pulse/readings` JSON contains live `power_total` updates ~every
+   2–4 s and diagnostics arrive only on `tibber/pulse/diagnostics`.
 3. **Helm**: `helm lint chart && helm template r chart --set pulse.host=...
    --set mqtt.host=... --set pulse.password=...` for at least one of the
    three password modes; expect zero errors.
@@ -192,14 +196,14 @@ done:
 - Implemented in [`internal/discovery`](internal/discovery/discovery.go).
 - Flags: `--ha-discovery` (off by default) + `--ha-discovery-prefix`
   (default `homeassistant`).
-- Discovery happens **lazily inside `MQTTSink.Publish`**, not at startup —
-  the meter serial is needed as HA device identifier and only arrives in
-  the first SML frame. Per session, each sensor's config is announced once.
+- Discovery happens lazily after the first SML frame because the meter serial
+  is the shared HA device identifier. Measurements and diagnostics belong to
+  that same device; diagnostics use `entity_category: diagnostic`.
 - Newly appearing sensors (e.g. when MSB later enables EDL40) auto-announce
   on the fly — no restart needed.
 - Discovery messages are published with **`retain: true`** (HA convention,
-  so HA can rebuild its registry after restart). State messages are NOT
-  retained — they update every 2–4 s.
+  so HA can rebuild its registry after restart). The `readings` and
+  `diagnostics` JSON state messages are NOT retained.
 - `unique_id` and `object_id` derive from `tibber_pulse_<serial>_<sensor>`
   (lowercased, non-alphanumerics → underscore) — stable across restarts and
   bot upgrades.
@@ -234,5 +238,3 @@ CI mirrors the enforceable subset: `test.yml` runs gofmt / vet / go test **and**
 
 - Adding HAN/SMGW (Smart Meter Gateway) support is a different protocol
   (CMS-encrypted, separate hardware) — not a small extension of this codebase.
-- A `metrics.json` poller for bridge battery/RSSI/uptime could be added at
-  ~30 min cadence as a second goroutine — keep it optional.

@@ -107,7 +107,7 @@ Run the published image, pinned by digest (kept current by Renovate):
 
 ```bash
 docker run --rm \
-  -e TIBBER_PULSE_PASSWORD=AD56-54BA \
+  -e TIBBER_PULSE_PASSWORD=XXXX-XXXX \
   ghcr.io/0bu/tibber-pulse-bot:1.0.19@sha256:4c217654234b293a3fd8222b7a0d72d1c471f7016d2ed44bf71ace686eca2ac3 \
   --pulse-host 192.168.107.118 \
   --mqtt-host 192.168.1.27
@@ -119,7 +119,7 @@ Or build from source:
 docker build -t tibber-pulse-bot .
 
 docker run --rm \
-  -e TIBBER_PULSE_PASSWORD=AD56-54BA \
+  -e TIBBER_PULSE_PASSWORD=XXXX-XXXX \
   tibber-pulse-bot \
   --pulse-host 192.168.107.118 \
   --mqtt-host 192.168.1.27
@@ -149,18 +149,18 @@ go build -o tibber-pulse-bot ./cmd/tibber-pulse-bot
 # Live push to MQTT (default)
 ./tibber-pulse-bot \
   --pulse-host 192.168.107.118 \
-  --pulse-password AD56-54BA \
+  --pulse-password XXXX-XXXX \
   --mqtt-host 192.168.1.27
 
 # Stdout only — no --mqtt-host
 ./tibber-pulse-bot \
   --pulse-host 192.168.107.118 \
-  --pulse-password AD56-54BA
+  --pulse-password XXXX-XXXX
 
 # Polling fallback for old bridge firmware
 ./tibber-pulse-bot --mode poll --interval 10s \
   --pulse-host 192.168.107.118 \
-  --pulse-password AD56-54BA \
+  --pulse-password XXXX-XXXX \
   --mqtt-host 192.168.1.27
 ```
 
@@ -207,11 +207,29 @@ Push automatically reconnects when the bridge drops the TCP socket (every
 | `-v` | `false` | Log every WS reconnect (default: only real errors) |
 | `--ha-discovery` | `false` | Publish Home Assistant MQTT-Discovery configs |
 | `--ha-discovery-prefix` | `homeassistant` | HA discovery topic prefix |
-| `--metrics-interval` | `60s` | Bridge metrics (`/metrics.json`) poll cadence; `0` disables |
+| `--metrics-interval` | `60s` | Bridge diagnostics poll cadence; `0` disables |
+| `--version` | `false` | Print version and exit |
 
 ## MQTT topics
 
-Known OBIS values are published as `<topic-prefix>/<name>`:
+The bot publishes all live state on exactly two non-retained MQTT topics:
+
+- `<topic-prefix>/readings` — one JSON object per SML telegram
+- `<topic-prefix>/diagnostics` — one JSON object per `--metrics-interval`
+
+Example readings payload:
+
+```json
+{
+  "power_total": 3,
+  "energy_import_total": 2423174.8,
+  "energy_export_total": 253615.6,
+  "manufacturer": "LGZ",
+  "meter_serial": "LGZ-81199038"
+}
+```
+
+Known OBIS values use these JSON field names:
 
 - `power_total`, `power_l1` / `l2` / `l3` — current active power [W]
 - `energy_import_total`, `energy_export_total` — total energy [Wh]
@@ -220,49 +238,42 @@ Known OBIS values are published as `<topic-prefix>/<name>`:
 - `meter_serial` — `<manufacturer>-<serial>` (e.g. `LGZ-81199038`)
 - `device_id` — raw 10-byte FNN server-ID as hex
 
-Unknown OBIS codes fall through to `<topic-prefix>/obis/<code>` (e.g.
-`tibber/pulse/obis/1-0:96.50.1_1`).
+Unknown OBIS codes remain available in the readings payload's nested `obis`
+object instead of creating arbitrary topics:
 
-Bridge state is fetched from `/metrics.json`, `/nodes.json`, `/status.json`
-and `/ota_manifest.json` every `--metrics-interval` (default 60s) and
-published under `<topic-prefix>/bridge/<name>`. Every field the bot decodes
-from those four endpoints is published; string fields are only emitted (and
-announced to HA) once they carry a non-empty value.
+```json
+{"obis":{"1-0:96.50.1*1":7}}
+```
 
-| Source | Sensor | Type |
+Bridge health is fetched from `/metrics.json`, `/nodes.json`, and
+`/status.json` every `--metrics-interval` (default 60s). The diagnostics JSON
+is deliberately limited to the values needed to recognize a bridge, meter
+link, or WiFi problem:
+
+| JSON field | Meaning |
 |---|---|---|
-| metrics.json | `battery_voltage`, `temperature`, `rssi` (meter link), `lqi`, `radio_tx_power`, `uptime` (node), `meter_msg_sent`, `pkg_sent`, `pkg_received`, `readings_received`, `corrupt_readings`, `invalid_readings`, `compression_error_readings`, `meter_mode`, `bootloader_version`, `product_id` | numeric |
-| metrics.json | `node_version` (node firmware) | text |
-| nodes.json | `node_id`, `last_seen_age`, `last_data_age` (s since last meter telegram), `average_rssi`, `average_lqi` | numeric |
-| nodes.json | `eui`, `product_model`, `model`, `version`, `ota_distribute_status` | text |
-| nodes.json | `available`, `paired` | binary `ON`/`OFF` |
-| status.json | `bridge_uptime`, `wifi_rssi` (router link, distinct from `rssi`) | numeric |
-| status.json | `pairing_status`, `firmware_esp`, `firmware_efr`, `wifi_ip`, `wifi_ssid`, `wifi_bssid` | text |
-| status.json | `wifi_connected`, `cloud_mqtt` (Tibber cloud connection), `cloud_mqtt_subscribed`, `ota_update_running` | binary `ON`/`OFF` |
-| ota_manifest.json | `update_available` (any component out of date) | binary `ON`/`OFF` |
-| ota_manifest.json | per component `ota_<index>_<model>_current_version`, `ota_<index>_<model>_manifest_version` (text), `ota_<index>_<model>_up2date` (binary) | text / binary |
+| `bridge_available` | Pulse node reachable |
+| `last_data_age` | Seconds since the last meter telegram |
+| `meter_link_rssi` | Meter-to-bridge radio signal [dBm] |
+| `wifi_rssi` | Bridge-to-router signal [dBm] |
+| `bridge_battery_voltage` | Pulse node supply voltage [V] |
+| `bridge_temperature` | Pulse node temperature [°C] |
+| `corrupt_readings` | Corrupt telegram counter |
 
-With `--ha-discovery` they appear as a separate **Tibber Pulse Bridge
-\<EUI\>** device in HA. The bridge device card shows both ESP32 hub and
-EFR32 node firmware versions, the bridge's MAC-style EUI under
-"connections", and a "Visit device" link to the bridge web UI. The meter
-device gets a `via_device` link so HA shows "Connected via Tibber Pulse
-Bridge …" on the meter card.
-
-> Migration note (v1.0.4 → v1.0.5): the bridge identifier changed from
-> IP-based to EUI-based (DHCP-stable). On first run, v1.0.5 publishes
-> empty retained payloads to the legacy IP-based discovery topics so HA
-> garbage-collects the old "Tibber Pulse Bridge \<ip\>" device card. If
-> HA still shows the orphan device, delete it manually once.
+No per-value state topics are emitted. Home Assistant discovery still uses one
+retained config topic per entity, as required by HA, but every measurement
+reads from the shared `readings` JSON and every diagnostic reads from the
+shared `diagnostics` JSON.
 
 ## Home Assistant integration
 
 Pass `--ha-discovery` to enable [MQTT
 Discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery).
 On the first SML frame the bot publishes one **retained** config message per
-known sensor under `homeassistant/sensor/<unique_id>/config`. HA picks them up
-automatically and groups all entities under one Device named after the meter
-serial (e.g. `Tibber Pulse LGZ-81199038`).
+known entity. HA groups meter readings and bridge diagnostics under one Device
+named after the meter serial (e.g. `Tibber Pulse LGZ-81199038`). Diagnostics
+appear in that device's **Diagnostics** section through
+`entity_category: diagnostic`; there is no separate bridge device.
 
 ```bash
 tibber-pulse-bot --pulse-host 192.168.107.118 --pulse-password ... \
@@ -277,14 +288,12 @@ grid sources directly). When the MSB later enables the extended EDL40
 profile (per-phase power, voltage, current, frequency), those entities
 appear in HA automatically — the bot announces newly seen sensors on the fly.
 
-When the bridge EUI is first learned (or changes), the bot reconciles the
-retained discovery configs against the broker to clear stale ones — for
-which it needs a **`SUBSCRIBE` grant on `<ha-discovery-prefix>/+/+/config`**
-in addition to publish. On a locked-down broker ACL that denies that
-subscribe, the bot can't enumerate the retained store and falls back to a
-publish-only sweep of the statically-known bridge topics under the departed
-identifier; dynamically-named per-OTA-component orphans are only cleared once
-the subscribe is granted.
+On the first diagnostics update after upgrading, the bot removes retained
+configs for the former separate Bridge device. A **`SUBSCRIBE` grant on
+`<ha-discovery-prefix>/+/+/config`** lets it enumerate and remove every legacy
+config. If the broker denies that subscription, it falls back to clearing the
+statically known legacy configs by name; an old dynamically named OTA entity
+may then need to be deleted manually in HA.
 
 ## Stdout output
 
