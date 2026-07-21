@@ -41,9 +41,12 @@ introduced or touched by the diff.
    the reverse and the string-valued exclusions (`device_id`, `manufacturer`,
    `meter_serial` carry text and intentionally have no sensor).
 
-4. **MQTT topic naming.** Known OBIS → `<prefix>/<name>`; unknown OBIS →
-   `<prefix>/obis/<code>` with `*` → `_`. Numeric payloads `%.3f`, no unit
-   suffix (the topic implies the unit); string values raw. Flag deviations.
+4. **MQTT topic naming.** One SML telegram → `<prefix>/readings` JSON; reduced
+   bridge health → `<prefix>/diagnostics` JSON. Known OBIS values are top-level
+   fields and unknown values live under the nested `obis` object with the raw
+   code as key. Flag any reintroduction of per-value state topics. HA discovery
+   config topics remain per entity because they configure the registry rather
+   than carry live state.
 
 5. **Version-injection wiring.** If `main.go`'s `version`/`commit` vars, the
    Dockerfile build-args, or the CI `VERSION`/`COMMIT` derivation changed,

@@ -42,7 +42,7 @@ func main() {
 	reconnectDelay := flag.Duration("reconnect-delay", 1*time.Second, "Delay before reconnecting after WS disconnect")
 	verbose := flag.Bool("v", false, "Verbose: log every WS reconnect (default: only real errors)")
 	quiet := flag.Bool("quiet", false, "When --mqtt-host is set, suppress the per-update stdout line")
-	metricsInterval := flag.Duration("metrics-interval", 60*time.Second, "Bridge metrics poll interval (set 0 to disable)")
+	metricsInterval := flag.Duration("metrics-interval", 60*time.Second, "Bridge diagnostics poll interval (set 0 to disable)")
 	flag.Parse()
 
 	if *showVersion {
@@ -137,10 +137,8 @@ func pollOnce(ctx context.Context, c *pulse.Client, sink output.Sink) error {
 	return sink.Publish(ctx, readings)
 }
 
-// runMetrics polls /metrics.json + /nodes.json + /status.json + /ota_manifest.json
-// on a fixed cadence and forwards the values to MQTT (when mqttSink is
-// non-nil) or stdout (otherwise). Each source is independent — a failure
-// of one is logged and the rest of the data still goes out.
+// runMetrics polls the three endpoints that back the reduced diagnostics set.
+// Each source is independent; only /metrics.json is required.
 func runMetrics(ctx context.Context, c *pulse.Client, mqttSink *output.MQTTSink, interval time.Duration) {
 	pollAndPublish := func() {
 		fctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -164,15 +162,9 @@ func runMetrics(ctx context.Context, c *pulse.Client, mqttSink *output.MQTTSink,
 		} else {
 			u.Status = &s
 		}
-		if o, err := c.FetchOTAManifest(fctx); err != nil {
-			log.Printf("ota fetch: %v", err)
-		} else {
-			u.OTA = o
-		}
-
 		if mqttSink != nil {
 			if err := mqttSink.PublishBridgeUpdate(u); err != nil {
-				log.Printf("metrics publish: %v", err)
+				log.Printf("diagnostics publish: %v", err)
 			}
 			return
 		}
@@ -194,16 +186,8 @@ func runMetrics(ctx context.Context, c *pulse.Client, mqttSink *output.MQTTSink,
 func logBridgeStdout(u output.BridgeUpdate) {
 	m := u.Metrics
 	wifiRSSI := 0
-	cloud := "?"
-	esp, efr := "?", "?"
 	if u.Status != nil {
 		wifiRSSI = u.Status.WiFi.RSSI
-		if u.Status.MQTT.Connected {
-			cloud = "up"
-		} else {
-			cloud = "down"
-		}
-		esp, efr = u.Status.Firmware.ESP, u.Status.Firmware.EFR
 	}
 	avail := "?"
 	lastData := int64(-1)
@@ -215,20 +199,9 @@ func logBridgeStdout(u output.BridgeUpdate) {
 		}
 		lastData = u.Node.LastDataMS / 1000
 	}
-	upd := "?"
-	for _, e := range u.OTA {
-		if !e.Up2Date {
-			upd = "available"
-			break
-		}
-	}
-	if upd == "?" && len(u.OTA) > 0 {
-		upd = "current"
-	}
-	log.Printf("bridge: V=%.3fV T=%.1f°C meterRSSI=%.0fdBm wifiRSSI=%ddBm uptime=%dh pkg_recv=%d corrupt=%d available=%s lastData=%ds cloud=%s update=%s esp=%s efr=%s",
+	log.Printf("bridge: V=%.3fV T=%.1f°C meterRSSI=%.0fdBm wifiRSSI=%ddBm corrupt=%d available=%s lastData=%ds",
 		m.BatteryVoltage, m.Temperature, m.AvgRSSI, wifiRSSI,
-		m.UptimeMS/3_600_000, m.MeterPkgCountRecv, m.MeterCorruptCountRecv,
-		avail, lastData, cloud, upd, esp, efr)
+		m.MeterCorruptCountRecv, avail, lastData)
 }
 
 func runPush(ctx context.Context, c *pulse.Client, sink output.Sink, idle, backoff time.Duration, verbose bool) {

@@ -26,7 +26,7 @@ the chart fails the install if none is set.
 ```bash
 helm install tibber-pulse-bot ./chart \
   --set pulse.host=192.168.107.118 \
-  --set pulse.password=AD56-54BA \
+  --set pulse.password=XXXX-XXXX \
   --set mqtt.host=mosquitto.default.svc.cluster.local
 ```
 
@@ -47,7 +47,7 @@ Encrypt the password with `kubeseal --raw` (one value, no Secret wrapper):
 RELEASE=tibber-pulse-bot
 NAMESPACE=default
 
-CIPHER=$(echo -n 'AD56-54BA' | kubeseal --raw \
+CIPHER=$(echo -n 'XXXX-XXXX' | kubeseal --raw \
   --name "$RELEASE" \
   --namespace "$NAMESPACE" \
   --controller-namespace kube-system)
@@ -74,7 +74,7 @@ manual `kubectl`, …) with one key:
 
 ```bash
 kubectl create secret generic tibber-pulse \
-  --from-literal=TIBBER_PULSE_PASSWORD=AD56-54BA
+  --from-literal=TIBBER_PULSE_PASSWORD=XXXX-XXXX
 ```
 
 Then point the chart at it — the password value in `values.yaml` is ignored:
@@ -94,6 +94,7 @@ Top-level keys in `values.yaml`:
 |---|---|---|
 | `image.repository` | `ghcr.io/0bu/tibber-pulse-bot` | Container image |
 | `image.tag` | chart `appVersion` | Tag override |
+| `image.pullPolicy` | `IfNotPresent` | Kubernetes image pull policy |
 | `pulse.host` | `""` (required) | Bridge IP / hostname |
 | `pulse.node` | `1` | Bridge node id |
 | `pulse.password` | `""` | Inline password (dev only) |
@@ -111,7 +112,16 @@ Top-level keys in `values.yaml`:
 | `quiet` | `false` | Suppress per-update stdout one-liner |
 | `homeAssistant.discovery` | `false` | Publish HA MQTT-Discovery configs |
 | `homeAssistant.discoveryPrefix` | `homeassistant` | HA discovery topic prefix |
+| `metricsInterval` | `60s` | Reduced bridge diagnostics JSON cadence; `0` disables |
+| `replicaCount` | `1` | Deployment replica count |
 | `resources` | 10m / 16Mi req, 64Mi limit | Container resource requests/limits |
+| `podAnnotations` | `{}` | Additional pod annotations |
+| `podSecurityContext` | non-root UID/GID 65532 | Pod-level security context |
+| `securityContext` | read-only, no privilege escalation | Container security context |
+| `nodeSelector` | `{}` | Pod node selector |
+| `tolerations` | `[]` | Pod tolerations |
+| `affinity` | `{}` | Pod affinity rules |
+| `fullnameOverride` | `""` | Override the generated resource name |
 
 The chart fails the install if `pulse.host` or `mqtt.host` is empty, so
 typos surface during `helm install`/`helm upgrade` rather than at runtime.
@@ -136,6 +146,12 @@ Subscribe to verify MQTT topics from inside the cluster:
 kubectl run -it --rm mqtt-sub --image=eclipse-mosquitto --restart=Never -- \
   mosquitto_sub -h mosquitto -t 'tibber/pulse/#' -v
 ```
+
+The subscription shows only two state topics: `tibber/pulse/readings` with
+one JSON object per SML telegram and `tibber/pulse/diagnostics` with the
+reduced bridge-health JSON. With Home Assistant discovery enabled, both the
+measurement and diagnostic entities belong to the same meter device; the
+diagnostics appear in its Diagnostics section.
 
 ## ArgoCD / GitOps
 

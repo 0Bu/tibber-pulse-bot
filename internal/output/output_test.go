@@ -1,8 +1,10 @@
 package output
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,359 +16,83 @@ import (
 	"github.com/0Bu/tibber-pulse-bot/internal/sml"
 )
 
-// ptr boxes a value so the pointer-typed presence-tracked identifier fields
-// (Metrics.MeterMode, Node.NodeID, …) can be set inline in test fixtures.
-func ptr[T any](v T) *T { return &v }
-
-func TestFormatStatePayload(t *testing.T) {
-	tests := []struct {
-		name string
-		in   any
-		want string
-	}{
-		{"bool true", true, "ON"},
-		{"bool false", false, "OFF"},
-		{"float64", 3.14159, "3.142"},
-		{"int", 42, "42"},
-		{"int64", int64(123), "123"},
-		{"string verbatim", "1.2.3", "1.2.3"},
-		{"empty string skipped", "", ""},
-		{"nil skipped", nil, ""},
+func TestReadingState(t *testing.T) {
+	got := readingState([]sml.Reading{
+		{Name: "power_total", Value: 3.125},
+		{Name: "meter_serial", Raw: "LGZ-81199038"},
+		{OBIS: "1-0:96.50.1*1", Value: 7},
+	})
+	if got["power_total"] != 3.125 {
+		t.Errorf("power_total = %v", got["power_total"])
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := formatStatePayload(tt.in); got != tt.want {
-				t.Errorf("formatStatePayload(%v) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
+	if got["meter_serial"] != "LGZ-81199038" {
+		t.Errorf("meter_serial = %v", got["meter_serial"])
+	}
+	unknown, ok := got["obis"].(map[string]any)
+	if !ok || unknown["1-0:96.50.1*1"] != float64(7) {
+		t.Errorf("obis = %#v", got["obis"])
 	}
 }
 
-func TestBridgeState(t *testing.T) {
-	var st pulse.Status
-	st.PairingStatus = "PAIRED"
-	st.UpTime = 12345 // 10ms ticks → 123.45 s
-	st.WiFi.IP = "192.168.1.5"
-	st.WiFi.SSID = "home"
-	st.WiFi.RSSI = -55
-	st.WiFi.Connected = true
-
+func TestDiagnosticStateIsReduced(t *testing.T) {
+	var status pulse.Status
+	status.WiFi.RSSI = -55
 	u := BridgeUpdate{
 		Metrics: pulse.Metrics{
-			BatteryVoltage: 3.3, RadioTxPower: ptr(14), MeterMode: ptr(2),
-			ProductID: ptr(7), NodeVersion: "n9",
-			MeterMsgCountSent: 42, CompressionErrorReadings: 3,
+			BatteryVoltage: 3.3, Temperature: 21.5, AvgRSSI: -67,
+			MeterCorruptCountRecv: 2,
 		},
-		Node: &pulse.Node{
-			NodeID: ptr(1), EUI: "30FB10FFFE9326A9", Model: "node-efr32",
-			Version: "", Available: true, Paired: true, AverageRSSI: -70,
-		},
-		Status: &st,
-		OTA: []pulse.OTAEntry{
-			{Model: "tibber-pulse-ir-hub-esp32", OTAIndex: 0, CurrentVersion: "1.2", ManifestVersion: "1.3", Up2Date: false},
-		},
+		Node:   &pulse.Node{Available: true, LastDataMS: 2500},
+		Status: &status,
 	}
-	values, dyn := bridgeState(u)
-
-	// scalar fields from each source
-	for _, k := range []string{
-		"battery_voltage", "radio_tx_power", "meter_mode", "product_id", "node_version",
-		"node_id", "eui", "model", "available", "paired", "average_rssi",
-		"pairing_status", "wifi_ip", "wifi_ssid", "wifi_rssi", "wifi_connected",
-		"update_available",
-	} {
-		if _, ok := values[k]; !ok {
-			t.Errorf("missing key %q", k)
+	got := diagnosticState(u)
+	wantKeys := []string{
+		"bridge_available", "last_data_age", "meter_link_rssi", "wifi_rssi",
+		"bridge_battery_voltage", "bridge_temperature", "corrupt_readings",
+	}
+	if len(got) != len(wantKeys) {
+		t.Fatalf("diagnostics has %d values, want %d: %#v", len(got), len(wantKeys), got)
+	}
+	for _, key := range wantKeys {
+		if _, ok := got[key]; !ok {
+			t.Errorf("missing diagnostic %q", key)
+		}
+		if _, ok := discovery.Diagnostics[key]; !ok {
+			t.Errorf("diagnostic %q has no HA metadata", key)
 		}
 	}
-	// empty string fields are dropped (Node.Version is "")
-	if _, ok := values["version"]; ok {
-		t.Error("empty string field 'version' should be dropped")
+	if got["last_data_age"] != 2.5 {
+		t.Errorf("last_data_age = %v, want 2.5", got["last_data_age"])
 	}
-	// integer identifiers stay int, not float64
-	if v, ok := values["product_id"].(int); !ok || v != 7 {
-		t.Errorf("product_id = %v (%T), want int 7", values["product_id"], values["product_id"])
-	}
-	// newly added integer counters render as int ("42"), not float64 ("42.000")
-	if v, ok := values["meter_msg_sent"].(int); !ok || v != 42 {
-		t.Errorf("meter_msg_sent = %v (%T), want int 42", values["meter_msg_sent"], values["meter_msg_sent"])
-	}
-	if v, ok := values["compression_error_readings"].(int); !ok || v != 3 {
-		t.Errorf("compression_error_readings = %v (%T), want int 3", values["compression_error_readings"], values["compression_error_readings"])
-	}
-	// per-component OTA topics with dynamic discovery specs; the slug is
-	// prefixed with the OTAIndex (0 here) to avoid same-model collisions.
-	cv := "ota_0_tibber_pulse_ir_hub_esp32_current_version"
-	ud := "ota_0_tibber_pulse_ir_hub_esp32_up2date"
-	if values[cv] != "1.2" {
-		t.Errorf("%s = %v, want 1.2", cv, values[cv])
-	}
-	if _, ok := dyn[cv]; !ok {
-		t.Errorf("missing dynamic spec for %q", cv)
-	}
-	if dyn[ud].Component != "binary_sensor" {
-		t.Errorf("%s component = %q, want binary_sensor", ud, dyn[ud].Component)
-	}
-	if values["update_available"] != true {
-		t.Error("update_available should be true when a component is out of date")
-	}
-	// bridge up_time is 10ms FreeRTOS ticks → seconds (÷100), not raw/ms
-	if v, ok := values["bridge_uptime"].(float64); !ok || v != 123.45 {
-		t.Errorf("bridge_uptime = %v (%T), want float64 123.45", values["bridge_uptime"], values["bridge_uptime"])
-	}
-}
-
-// TestBridgeStatePhantomZero is the regression guard for #66: an integer
-// identifier field the firmware omits (nil pointer) must be dropped, not
-// published as a phantom "0" that would earn a permanent retained HA entity.
-// A field genuinely present with value 0 must still be published, and counters
-// that legitimately start at 0 keep publishing.
-func TestBridgeStatePhantomZero(t *testing.T) {
-	// Firmware omits every pointer identifier (all nil), reports a genuine 0
-	// only for node_id, and a 0 counter.
-	u := BridgeUpdate{
-		Metrics: pulse.Metrics{BatteryVoltage: 3.3, MeterPkgCountSent: 0},
-		Node:    &pulse.Node{NodeID: ptr(0), EUI: "30FB10FFFE9326A9"},
-	}
-	values, _ := bridgeState(u)
-
-	// Absent identifiers must not appear at all.
-	for _, k := range []string{"radio_tx_power", "meter_mode", "bootloader_version", "product_id"} {
-		if _, ok := values[k]; ok {
-			t.Errorf("absent identifier %q was published (phantom zero)", k)
-		}
-	}
-	// A genuine 0 identifier is published.
-	if v, ok := values["node_id"].(int); !ok || v != 0 {
-		t.Errorf("node_id = %v (%T), want int 0 (present-0 must publish)", values["node_id"], values["node_id"])
-	}
-	// A counter legitimately at 0 keeps publishing.
-	if v, ok := values["pkg_sent"].(float64); !ok || v != 0 {
-		t.Errorf("pkg_sent = %v (%T), want float64 0", values["pkg_sent"], values["pkg_sent"])
-	}
-
-	// When present, the identifiers publish their real value (including a 0).
-	u2 := BridgeUpdate{Metrics: pulse.Metrics{
-		RadioTxPower: ptr(0), MeterMode: ptr(0),
-		BootloaderVersion: ptr(int64(0)), ProductID: ptr(7),
-	}}
-	v2, _ := bridgeState(u2)
-	if v, ok := v2["meter_mode"].(int); !ok || v != 0 {
-		t.Errorf("present meter_mode = %v (%T), want int 0", v2["meter_mode"], v2["meter_mode"])
-	}
-	if v, ok := v2["radio_tx_power"].(float64); !ok || v != 0 {
-		t.Errorf("present radio_tx_power = %v (%T), want float64 0", v2["radio_tx_power"], v2["radio_tx_power"])
-	}
-	if v, ok := v2["bootloader_version"].(int64); !ok || v != 0 {
-		t.Errorf("present bootloader_version = %v (%T), want int64 0", v2["bootloader_version"], v2["bootloader_version"])
-	}
-	if v, ok := v2["product_id"].(int); !ok || v != 7 {
-		t.Errorf("present product_id = %v (%T), want int 7", v2["product_id"], v2["product_id"])
-	}
-}
-
-// TestBridgeStateOTAIndexDisambiguates guards against the collision where two
-// OTA components share a model: the OTAIndex must keep their topics distinct
-// so neither component's version data is silently overwritten.
-func TestBridgeStateOTAIndexDisambiguates(t *testing.T) {
-	u := BridgeUpdate{
-		OTA: []pulse.OTAEntry{
-			{Model: "efr32", OTAIndex: 1, CurrentVersion: "1.0"},
-			{Model: "efr32", OTAIndex: 2, CurrentVersion: "2.0"},
-		},
-	}
-	values, _ := bridgeState(u)
-	if values["ota_1_efr32_current_version"] != "1.0" {
-		t.Errorf("index 1 = %v, want 1.0", values["ota_1_efr32_current_version"])
-	}
-	if values["ota_2_efr32_current_version"] != "2.0" {
-		t.Errorf("index 2 = %v, want 2.0", values["ota_2_efr32_current_version"])
-	}
-}
-
-// TestBridgeObjectID covers parsing the HA object_id out of a discovery config
-// topic and rejecting non-bridge / non-config topics.
-func TestBridgeObjectID(t *testing.T) {
-	cases := []struct {
-		topic, prefix, wantID string
-		wantOK                bool
-	}{
-		{"homeassistant/sensor/tibber-pulse-bridge-abc_rssi/config", "homeassistant", "tibber-pulse-bridge-abc_rssi", true},
-		{"homeassistant/binary_sensor/tibber-pulse-bridge-abc_available/config", "homeassistant", "tibber-pulse-bridge-abc_available", true},
-		{"homeassistant/sensor/tibber-pulse-lgz_81199038_power_total/config", "homeassistant", "", false}, // meter, not bridge
-		{"homeassistant/sensor/tibber-pulse-bridge-abc_rssi/state", "homeassistant", "", false},           // not a config topic
-		{"ha/discovery/sensor/tibber-pulse-bridge-x_rssi/config", "ha/discovery", "tibber-pulse-bridge-x_rssi", true},
-	}
-	for _, c := range cases {
-		got, ok := bridgeObjectID(c.topic, c.prefix)
-		if ok != c.wantOK || got != c.wantID {
-			t.Errorf("bridgeObjectID(%q,%q) = (%q,%v), want (%q,%v)", c.topic, c.prefix, got, ok, c.wantID, c.wantOK)
+	for _, removed := range []string{"lqi", "uptime", "node_id", "wifi_ssid", "cloud_mqtt", "update_available"} {
+		if _, ok := got[removed]; ok {
+			t.Errorf("overloaded diagnostic %q is still present", removed)
 		}
 	}
 }
 
-// TestStaleBridgeConfigs covers the reconcile decision: clear old-identity and
-// current-but-undesired configs, never a desired one, another bridge's, or a
-// meter config.
-func TestStaleBridgeConfigs(t *testing.T) {
-	const prefix = "homeassistant"
-	const oldID = "tibber-pulse-bridge-192_168_1_5" // host-based legacy id
-	const curID = "tibber-pulse-bridge-30fb10fffe9326a9"
-	topic := func(comp, oid string) string { return prefix + "/" + comp + "/" + oid + "/config" }
-
-	desiredKeep := topic("sensor", curID+"_battery_voltage")
-	curStale := topic("sensor", curID+"_ota_9_gone_current_version")
-	oldLegacy := topic("sensor", oldID+"_temperature")
-	otherBridge := topic("sensor", "tibber-pulse-bridge-deadbeef_battery_voltage")
-	meterConfig := topic("sensor", "tibber-pulse-lgz_81199038_power_total")
-
-	observed := map[string]struct{}{
-		desiredKeep: {}, curStale: {}, oldLegacy: {}, otherBridge: {}, meterConfig: {},
-	}
-	desired := map[string]struct{}{desiredKeep: {}}
-
-	cleared := map[string]bool{}
-	for _, tpc := range staleBridgeConfigs(observed, desired, prefix, oldID, curID, true) {
-		cleared[tpc] = true
-	}
-	if !cleared[curStale] {
-		t.Errorf("should clear stale current-id config %s", curStale)
-	}
-	if !cleared[oldLegacy] {
-		t.Errorf("should clear old-identity config %s", oldLegacy)
-	}
-	if cleared[desiredKeep] {
-		t.Error("must not clear a desired config")
-	}
-	if cleared[otherBridge] {
-		t.Error("must not clear another bridge's config")
-	}
-	if cleared[meterConfig] {
-		t.Error("must not clear a meter config")
-	}
-
-	// With curIDComplete=false (manifest not fetched this cycle), current-id
-	// configs are left alone, but the departed identity is still swept.
-	cleared = map[string]bool{}
-	for _, tpc := range staleBridgeConfigs(observed, desired, prefix, oldID, curID, false) {
-		cleared[tpc] = true
-	}
-	if cleared[curStale] {
-		t.Error("must not clear current-id config when manifest is incomplete")
-	}
-	if !cleared[oldLegacy] {
-		t.Error("old-identity sweep must run regardless of manifest completeness")
-	}
-}
-
-// TestBridgeStateHasDiscoverySpecs is the bridge-side counterpart of
-// internal/sml.TestObisNamesHaveDiscoverySpecs: every field bridgeState can
-// emit must have HA discovery metadata, either a static entry in
-// discovery.BridgeSensors or a dynamic spec returned alongside the values
-// (the per-OTA-component sensors). A field published without a spec is
-// silently invisible in Home Assistant — the regression CLAUDE.md warns about.
-func TestBridgeStateHasDiscoverySpecs(t *testing.T) {
-	// Populate every decoded field with a non-empty value so none of the
-	// string fields are dropped — we want the full key set under test.
-	u := BridgeUpdate{
-		Metrics: pulse.Metrics{
-			BatteryVoltage: 3.3, Temperature: 21, AvgRSSI: -60, AvgLQI: 200,
-			RadioTxPower: ptr(14), UptimeMS: 1000, MeterMsgCountSent: 1,
-			MeterPkgCountSent: 1, InvalidMeterReadings: 0, MeterMode: ptr(2),
-			BootloaderVersion: ptr(int64(5)), ProductID: ptr(7), MeterPkgCountRecv: 1,
-			MeterReadingCountRecv: 1, MeterCorruptCountRecv: 0,
-			CompressionErrorReadings: 0, NodeVersion: "n9",
-		},
-		Node: &pulse.Node{
-			NodeID: ptr(1), EUI: "30FB10FFFE9326A9", ProductModel: "TFD01",
-			Model: "node-efr32", Version: "v1", Available: true,
-			LastSeenMS: 1000, LastDataMS: 1000, AverageRSSI: -70,
-			AverageLQI: 180, OTADistributeStatus: "idle", Paired: true,
-		},
-		Status: func() *pulse.Status {
-			var s pulse.Status
-			s.PairingStatus = "PAIRED"
-			s.UpTime = 12345
-			s.Firmware.ESP = "1.2"
-			s.Firmware.EFR = "3.4"
-			s.WiFi.IP = "192.168.1.5"
-			s.WiFi.SSID = "home"
-			s.WiFi.BSSID = "aa:bb:cc:dd:ee:ff"
-			s.WiFi.RSSI = -55
-			s.WiFi.Connected = true
-			s.MQTT.Connected = true
-			s.MQTT.Subscribed = true
-			s.OTAUpdateRunning = false
-			return &s
-		}(),
-		OTA: []pulse.OTAEntry{
-			{Model: "tibber-pulse-ir-hub-esp32", OTAIndex: 0, CurrentVersion: "1.2", ManifestVersion: "1.3", Up2Date: false},
-		},
-	}
-	values, dyn := bridgeState(u)
-	for name := range values {
-		if _, ok := discovery.BridgeSensors[name]; ok {
-			continue
+func TestDiagnosticStateOmitsFailedOptionalEndpoints(t *testing.T) {
+	got := diagnosticState(BridgeUpdate{Metrics: pulse.Metrics{BatteryVoltage: 3.3}})
+	for _, key := range []string{"bridge_available", "last_data_age", "wifi_rssi"} {
+		if _, ok := got[key]; ok {
+			t.Errorf("%q should be absent without its endpoint", key)
 		}
-		if _, ok := dyn[name]; ok {
-			continue
-		}
-		t.Errorf("bridgeState emits %q but neither discovery.BridgeSensors nor the dynamic spec map covers it — HA won't surface it", name)
-	}
-}
-
-func TestReconcileSettled(t *testing.T) {
-	tests := []struct {
-		name            string
-		swept, haveOTA  bool
-		attempts, fails int
-		want            bool
-	}{
-		{"manifest reconciled settles at once", true, true, 1, 0, true},
-		{"ota-less waits out the grace", true, false, 1, 0, false},
-		{"ota-less waits mid-grace", true, false, reconcileOTALessSweeps - 1, 0, false},
-		{"ota-less settles after grace", true, false, reconcileOTALessSweeps, 0, true},
-		{"transient ota miss does not settle early", true, false, 3, 0, false},
-		{"single subscribe failure keeps trying", false, false, 1, 1, false},
-		{"repeated subscribe failure gives up", false, false, 2, reconcileMaxFailures, true},
-		{"hard cap backstops", false, false, reconcileMaxAttempts, 1, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := reconcileSettled(tt.swept, tt.haveOTA, tt.attempts, tt.fails); got != tt.want {
-				t.Errorf("reconcileSettled(%v,%v,%d,%d) = %v, want %v",
-					tt.swept, tt.haveOTA, tt.attempts, tt.fails, got, tt.want)
-			}
-		})
 	}
 }
 
 func TestShort(t *testing.T) {
-	tests := []struct {
-		in   string
-		want string
-	}{
-		{"power_total", "P"},
-		{"energy_import_total", "Eimp"},
-		{"energy_export_total", "Eexp"},
-		{"voltage_l1", "U1"},
-		{"current_l3", "I3"},
-		{"frequency", "f"},
-		{"unmapped_key", "unmapped_key"},
+	tests := map[string]string{
+		"power_total": "P", "energy_import_total": "Eimp",
+		"energy_export_total": "Eexp", "voltage_l1": "U1",
+		"current_l3": "I3", "frequency": "f", "other": "other",
 	}
-	for _, tt := range tests {
-		if got := short(tt.in); got != tt.want {
-			t.Errorf("short(%q) = %q, want %q", tt.in, got, tt.want)
+	for in, want := range tests {
+		if got := short(in); got != want {
+			t.Errorf("short(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
 
-// --- meter via_device lifecycle (regression for #71) --------------------
-
-// errFakeNoSub makes the fake broker's SUBSCRIBE fail so the reconcile sweep
-// inside PublishBridgeUpdate bails immediately instead of blocking on the 3s
-// retained-enumeration deadline — the sweep is irrelevant to what these tests
-// assert (the meter via_device), so short-circuiting it keeps them fast.
 var errFakeNoSub = errors.New("fake: subscribe unsupported")
 
 type fakeToken struct{ err error }
@@ -380,33 +106,49 @@ func (t *fakeToken) Done() <-chan struct{} {
 }
 func (t *fakeToken) Error() error { return t.err }
 
-// fakeMQTTClient records the last payload published to each topic so a test
-// can inspect the discovery configs the sink emits. Subscribe fails on purpose
-// (see errFakeNoSub); the remaining interface methods are unused no-ops.
+type publishedMessage struct {
+	payload string
+	retain  bool
+}
+
 type fakeMQTTClient struct {
 	mu        sync.Mutex
-	published map[string]string
+	published map[string]publishedMessage
 }
 
 func newFakeMQTTClient() *fakeMQTTClient {
-	return &fakeMQTTClient{published: map[string]string{}}
+	return &fakeMQTTClient{published: map[string]publishedMessage{}}
 }
 
-func (c *fakeMQTTClient) payload(topic string) (string, bool) {
+func (c *fakeMQTTClient) message(topic string) (publishedMessage, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	p, ok := c.published[topic]
 	return p, ok
 }
 
-func (c *fakeMQTTClient) Publish(topic string, _ byte, _ bool, payload any) mqtt.Token {
+func (c *fakeMQTTClient) stateTopics(prefix string) []string {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	var topics []string
+	for topic := range c.published {
+		if strings.HasPrefix(topic, prefix+"/") {
+			topics = append(topics, topic)
+		}
+	}
+	return topics
+}
+
+func (c *fakeMQTTClient) Publish(topic string, _ byte, retain bool, payload any) mqtt.Token {
+	var raw string
 	switch p := payload.(type) {
 	case string:
-		c.published[topic] = p
+		raw = p
 	case []byte:
-		c.published[topic] = string(p)
+		raw = string(p)
 	}
+	c.mu.Lock()
+	c.published[topic] = publishedMessage{payload: raw, retain: retain}
 	c.mu.Unlock()
 	return &fakeToken{}
 }
@@ -416,167 +158,167 @@ func (c *fakeMQTTClient) Subscribe(string, byte, mqtt.MessageHandler) mqtt.Token
 }
 func (c *fakeMQTTClient) Unsubscribe(...string) mqtt.Token { return &fakeToken{} }
 func (c *fakeMQTTClient) Disconnect(uint)                  {}
-
-func (c *fakeMQTTClient) IsConnected() bool      { return true }
-func (c *fakeMQTTClient) IsConnectionOpen() bool { return true }
-func (c *fakeMQTTClient) Connect() mqtt.Token    { return &fakeToken{} }
+func (c *fakeMQTTClient) IsConnected() bool                { return true }
+func (c *fakeMQTTClient) IsConnectionOpen() bool           { return true }
+func (c *fakeMQTTClient) Connect() mqtt.Token              { return &fakeToken{} }
 func (c *fakeMQTTClient) SubscribeMultiple(map[string]byte, mqtt.MessageHandler) mqtt.Token {
 	return &fakeToken{}
 }
 func (c *fakeMQTTClient) AddRoute(string, mqtt.MessageHandler)    {}
 func (c *fakeMQTTClient) OptionsReader() mqtt.ClientOptionsReader { return mqtt.ClientOptionsReader{} }
 
-// meterVia returns the device.via_device of the retained discovery config the
-// sink published for one meter sensor, and whether that config exists at all.
-func meterVia(t *testing.T, fc *fakeMQTTClient, serial, sensor string) (string, bool) {
-	t.Helper()
-	topic := discovery.ConfigTopic("homeassistant", sensor, discovery.Device{MeterSerial: serial})
-	raw, ok := fc.payload(topic)
-	if !ok {
-		return "", false
-	}
-	var cfg struct {
-		Device struct {
-			ViaDevice string `json:"via_device"`
-		} `json:"device"`
-	}
-	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-		t.Fatalf("unmarshal meter config for %s: %v", sensor, err)
-	}
-	return cfg.Device.ViaDevice, true
-}
-
-func newDiscoverySink(fc *fakeMQTTClient, host string) *MQTTSink {
-	m := &MQTTSink{
-		client:           fc,
-		prefix:           "tibber/pulse",
-		discoveryPrefix:  "homeassistant",
-		discovered:       map[string]bool{},
-		bridgeDiscovered: map[string]bool{},
-	}
-	m.SetBridgeHost(host)
-	return m
-}
-
-// TestMeterViaDeviceReannouncesOnEUILearn is the regression guard for #71: a
-// meter announced before the bridge EUI is known links via the host-based
-// bridge id, and once the EUI is learned the meter re-announces with a
-// via_device pointing at the EUI-based bridge device that actually gets
-// published — never leaving HA on "Connected via Unnamed device".
-func TestMeterViaDeviceReannouncesOnEUILearn(t *testing.T) {
-	fc := newFakeMQTTClient()
-	m := newDiscoverySink(fc, "192.168.1.5")
-
-	const serial = "LGZ-81199038"
-	readings := []sml.Reading{
-		{Name: "meter_serial", Raw: serial},
-		{Name: "manufacturer", Raw: "LGZ"},
-		{Name: "power_total", Value: 3, Unit: "W"},
-	}
-
-	// Before the EUI is learned the meter links to the host-based bridge id.
-	m.maybeAnnounce(readings)
-	via, ok := meterVia(t, fc, serial, "power_total")
-	if !ok {
-		t.Fatal("meter config not published before EUI learn")
-	}
-	if want := "tibber-pulse-bridge-192_168_1_5"; via != want {
-		t.Fatalf("via_device before EUI = %q, want host-based %q", via, want)
-	}
-
-	// EUI arrives on the metrics path — the identifier transition must reset
-	// the meter announce latch so the next frame re-announces.
-	if err := m.PublishBridgeUpdate(BridgeUpdate{
-		Node: &pulse.Node{NodeID: ptr(1), EUI: "30FB10FFFE9326A9"},
-	}); err != nil {
-		t.Fatalf("PublishBridgeUpdate: %v", err)
-	}
-
-	// Next meter frame re-announces with the EUI-based via_device.
-	m.maybeAnnounce(readings)
-	via, _ = meterVia(t, fc, serial, "power_total")
-	if want := "tibber-pulse-bridge-30fb10fffe9326a9"; via != want {
-		t.Fatalf("via_device after EUI = %q, want EUI-based %q", via, want)
-	}
-
-	// The bridge device that via_device now names must actually exist on the
-	// broker (announceBridge published it under the same id), else the link
-	// would dangle exactly as #71 describes.
-	bridgeCfg := discovery.BridgeConfigTopic("homeassistant", "rssi",
-		discovery.BridgeSensors["rssi"],
-		discovery.BridgeDevice{Host: "192.168.1.5", EUI: "30FB10FFFE9326A9"})
-	if _, ok := fc.payload(bridgeCfg); !ok {
-		t.Fatal("EUI-based bridge device never published — meter via_device would dangle")
+func newTestMQTTSink(client *fakeMQTTClient, discoveryPrefix string) *MQTTSink {
+	return &MQTTSink{
+		client:                client,
+		prefix:                "tibber/pulse",
+		discoveryPrefix:       discoveryPrefix,
+		readingsDiscovered:    map[string]bool{},
+		diagnosticsDiscovered: map[string]bool{},
+		legacyCleaned:         map[string]bool{},
+		diagnostics:           map[string]any{},
+		device:                discovery.Device{BridgeHost: "192.168.1.5"},
 	}
 }
 
-// TestMeterAnnouncesWithoutEUI covers #71 acceptance criterion 2: a bridge
-// whose /nodes.json never yields an EUI still gets its meter entities into HA,
-// linked via the host-based bridge id (the only id published in that case).
-func TestMeterAnnouncesWithoutEUI(t *testing.T) {
-	fc := newFakeMQTTClient()
-	m := newDiscoverySink(fc, "10.0.0.9")
-
-	// Bridge metrics publish with no Node (/nodes.json never succeeds), so no
-	// identifier transition fires and the bridge announces under its host id.
-	if err := m.PublishBridgeUpdate(BridgeUpdate{}); err != nil {
-		t.Fatalf("PublishBridgeUpdate: %v", err)
-	}
-
-	m.maybeAnnounce([]sml.Reading{
-		{Name: "meter_serial", Raw: "LGZ-1"},
-		{Name: "power_total", Value: 1, Unit: "W"},
+func TestPublishUsesOneReadingsTopic(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "")
+	err := m.Publish(context.Background(), []sml.Reading{
+		{Name: "power_total", Value: 3},
+		{Name: "energy_import_total", Value: 42},
 	})
-
-	via, ok := meterVia(t, fc, "LGZ-1", "power_total")
-	if !ok {
-		t.Fatal("meter entity not announced when bridge has no EUI")
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
 	}
-	if want := "tibber-pulse-bridge-10_0_0_9"; via != want {
-		t.Fatalf("via_device = %q, want host-based %q", via, want)
+	topics := client.stateTopics("tibber/pulse")
+	if len(topics) != 1 || topics[0] != "tibber/pulse/readings" {
+		t.Fatalf("state topics = %v, want only readings", topics)
 	}
-
-	// The host-based bridge device the meter links to must actually exist,
-	// else criterion 2 degrades into the same dangling link #71 describes.
-	bridgeCfg := discovery.BridgeConfigTopic("homeassistant", "rssi",
-		discovery.BridgeSensors["rssi"], discovery.BridgeDevice{Host: "10.0.0.9"})
-	if _, ok := fc.payload(bridgeCfg); !ok {
-		t.Fatal("host-based bridge device never published — meter via_device would dangle")
+	msg, _ := client.message("tibber/pulse/readings")
+	var state map[string]any
+	if err := json.Unmarshal([]byte(msg.payload), &state); err != nil {
+		t.Fatalf("readings JSON: %v", err)
+	}
+	if state["power_total"] != float64(3) || state["energy_import_total"] != float64(42) {
+		t.Errorf("readings state = %#v", state)
+	}
+	if msg.retain {
+		t.Error("readings state must not be retained")
 	}
 }
 
-// TestReconcileFallbackSweepsStaticConfigsWhenSubscribeDenied is the guard for
-// #67's subscribe-denied fallback: when the broker refuses the discovery
-// wildcard SUBSCRIBE (fakeMQTTClient.Subscribe returns errFakeNoSub), the
-// identifier-transition reconcile can't enumerate the retained store, so it
-// falls back to a publish-only sweep — clearing the static bridge configs under
-// the departed identity — instead of silently doing nothing. The live identity's
-// own configs must survive.
-func TestReconcileFallbackSweepsStaticConfigsWhenSubscribeDenied(t *testing.T) {
-	fc := newFakeMQTTClient()
-	m := newDiscoverySink(fc, "192.168.1.5")
+func TestPublishBridgeUpdateUsesOneDiagnosticsTopic(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "")
+	if err := m.PublishBridgeUpdate(BridgeUpdate{Metrics: pulse.Metrics{BatteryVoltage: 3.3}}); err != nil {
+		t.Fatalf("PublishBridgeUpdate: %v", err)
+	}
+	topics := client.stateTopics("tibber/pulse")
+	if len(topics) != 1 || topics[0] != "tibber/pulse/diagnostics" {
+		t.Fatalf("state topics = %v, want only diagnostics", topics)
+	}
+}
 
-	// First EUI learn: the departed identity is the host-based v1.0.4 id.
+func TestDiscoveryGroupsReadingsAndDiagnosticsOnOneDevice(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "homeassistant")
+	var status pulse.Status
+	status.WiFi.RSSI = -55
 	if err := m.PublishBridgeUpdate(BridgeUpdate{
-		Node: &pulse.Node{NodeID: ptr(1), EUI: "30FB10FFFE9326A9"},
+		Metrics: pulse.Metrics{BatteryVoltage: 3.3, Temperature: 21, AvgRSSI: -67},
+		Node:    &pulse.Node{Available: true, LastDataMS: 1000},
+		Status:  &status,
 	}); err != nil {
 		t.Fatalf("PublishBridgeUpdate: %v", err)
 	}
-
-	// A static bridge config under the OLD host-based id must be cleared (empty
-	// retained payload) by the publish-only fallback sweep.
-	oldTopic := discovery.BridgeConfigTopic("homeassistant", "rssi",
-		discovery.BridgeSensors["rssi"], discovery.BridgeDevice{Host: "192.168.1.5"})
-	if p, ok := fc.payload(oldTopic); !ok || p != "" {
-		t.Errorf("old-id static config %q = %q (published=%v), want cleared to \"\"", oldTopic, p, ok)
+	if err := m.Publish(context.Background(), []sml.Reading{
+		{Name: "meter_serial", Raw: "LGZ-81199038"},
+		{Name: "manufacturer", Raw: "LGZ"},
+		{Name: "power_total", Value: 3},
+	}); err != nil {
+		t.Fatalf("Publish: %v", err)
 	}
 
-	// The live EUI-based config must NOT be cleared — announceBridge published
-	// it with content this same cycle.
-	newTopic := discovery.BridgeConfigTopic("homeassistant", "rssi",
-		discovery.BridgeSensors["rssi"],
-		discovery.BridgeDevice{Host: "192.168.1.5", EUI: "30FB10FFFE9326A9"})
-	if p, ok := fc.payload(newTopic); !ok || p == "" {
-		t.Errorf("live EUI-based config %q was cleared or missing (payload=%q, published=%v)", newTopic, p, ok)
+	dev := discovery.Device{MeterSerial: "LGZ-81199038"}
+	powerTopic := discovery.ConfigTopic("homeassistant", "power_total", discovery.Sensors["power_total"], dev)
+	diagTopic := discovery.ConfigTopic("homeassistant", "bridge_available", discovery.Diagnostics["bridge_available"], dev)
+	power := decodeConfig(t, client, powerTopic)
+	diag := decodeConfig(t, client, diagTopic)
+	if power["state_topic"] != "tibber/pulse/readings" {
+		t.Errorf("power state_topic = %v", power["state_topic"])
 	}
+	if diag["state_topic"] != "tibber/pulse/diagnostics" {
+		t.Errorf("diagnostic state_topic = %v", diag["state_topic"])
+	}
+	if diag["entity_category"] != "diagnostic" {
+		t.Errorf("entity_category = %v", diag["entity_category"])
+	}
+	if diag["value_template"] != "{{ 'ON' if value_json.bridge_available else 'OFF' }}" {
+		t.Errorf("diagnostic value_template = %v", diag["value_template"])
+	}
+	powerDev := power["device"].(map[string]any)
+	diagDev := diag["device"].(map[string]any)
+	if powerDev["name"] != diagDev["name"] || powerDev["name"] != "Tibber Pulse LGZ-81199038" {
+		t.Errorf("devices differ: power=%v diagnostic=%v", powerDev["name"], diagDev["name"])
+	}
+	if _, ok := diagDev["via_device"]; ok {
+		t.Error("diagnostics must not create or link to a separate bridge device")
+	}
+	stateTopics := client.stateTopics("tibber/pulse")
+	if len(stateTopics) != 2 {
+		t.Fatalf("state topics = %v, want readings + diagnostics", stateTopics)
+	}
+}
+
+func TestLegacyBridgeDiscoveryCleanupWithoutSubscribe(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "homeassistant")
+	if err := m.PublishBridgeUpdate(BridgeUpdate{
+		Node: &pulse.Node{EUI: "30FB10FFFE9326A9"},
+	}); err != nil {
+		t.Fatalf("PublishBridgeUpdate: %v", err)
+	}
+	for _, dev := range []discovery.LegacyBridgeDevice{
+		{Host: "192.168.1.5"},
+		{Host: "192.168.1.5", EUI: "30FB10FFFE9326A9"},
+	} {
+		topic := discovery.LegacyBridgeConfigTopic("homeassistant", "rssi", "sensor", dev)
+		msg, ok := client.message(topic)
+		if !ok || msg.payload != "" || !msg.retain {
+			t.Errorf("legacy cleanup %q = %#v, published=%v", topic, msg, ok)
+		}
+	}
+}
+
+func TestBridgeObjectID(t *testing.T) {
+	tests := []struct {
+		topic, prefix, want string
+		ok                  bool
+	}{
+		{"homeassistant/sensor/tibber-pulse-bridge-abc_rssi/config", "homeassistant", "tibber-pulse-bridge-abc_rssi", true},
+		{"homeassistant/sensor/tibber_pulse_lgz_power_total/config", "homeassistant", "", false},
+		{"homeassistant/sensor/tibber-pulse-bridge-abc_rssi/state", "homeassistant", "", false},
+	}
+	for _, tt := range tests {
+		got, ok := bridgeObjectID(tt.topic, tt.prefix)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("bridgeObjectID(%q) = (%q,%v), want (%q,%v)", tt.topic, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func decodeConfig(t *testing.T, client *fakeMQTTClient, topic string) map[string]any {
+	t.Helper()
+	msg, ok := client.message(topic)
+	if !ok {
+		t.Fatalf("missing discovery config %q", topic)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(msg.payload), &cfg); err != nil {
+		t.Fatalf("decode %q: %v", topic, err)
+	}
+	if !msg.retain {
+		t.Errorf("discovery config %q is not retained", topic)
+	}
+	return cfg
 }

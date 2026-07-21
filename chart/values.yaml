@@ -16,7 +16,7 @@ pulse:
   # 2) sealed-secret ciphertext checked into git (recommended for GitOps);
   #    requires the bitnami sealed-secrets controller running in-cluster.
   #    Encrypt with:
-  #      echo -n 'AD56-54BA' | kubeseal --raw \
+  #      echo -n 'XXXX-XXXX' | kubeseal --raw \
   #        --name <release-name> --namespace <ns> \
   #        --controller-namespace kube-system
   #    paste the output here:
@@ -40,9 +40,8 @@ mqtt:
   topic: "tibber/pulse"
   clientID: "tibber-pulse-bot"
 
-# Home Assistant MQTT-Discovery — when enabled, the bot publishes one
-# retained config message per known sensor so HA auto-creates entities
-# under a device named after the meter serial.
+# Home Assistant MQTT-Discovery — readings and diagnostics become entities
+# under one device named after the meter serial.
 homeAssistant:
   discovery: false
   discoveryPrefix: "homeassistant"
@@ -53,8 +52,8 @@ pollInterval: 10s
 wsIdleTimeout: 60s
 reconnectDelay: 1s
 
-# Bridge metrics: poll /metrics.json on this cadence and publish under
-# <topic>/bridge/<metric>. Set 0 to disable.
+# Bridge diagnostics: publish one reduced JSON document under
+# <topic>/diagnostics on this cadence. Set 0 to disable.
 metricsInterval: 60s
 
 # Suppress per-update stdout line when publishing to MQTT
