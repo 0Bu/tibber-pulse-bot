@@ -8,51 +8,17 @@ import (
 
 // Node mirrors one entry of /nodes.json.
 type Node struct {
-	// Pointer so an absent node_id stays nil and is dropped by the publisher
-	// rather than surfacing as a phantom-0 HA sensor (see Metrics identifiers).
-	NodeID              *int   `json:"node_id"`
-	EUI                 string `json:"eui"`
-	ProductModel        string `json:"product_model"`
-	Model               string `json:"model"`
-	Version             string `json:"version"`
-	Available           bool   `json:"available"`
-	LastSeenMS          int64  `json:"last_seen_ms"`
-	LastDataMS          int64  `json:"last_data_ms"`
-	AverageRSSI         int    `json:"average_rssi"`
-	AverageLQI          int    `json:"average_lqi"`
-	OTADistributeStatus string `json:"ota_distribute_status"`
-	Paired              bool   `json:"paired"`
+	NodeID     *int   `json:"node_id"`
+	EUI        string `json:"eui"`
+	Available  bool   `json:"available"`
+	LastDataMS int64  `json:"last_data_ms"`
 }
 
-// Status mirrors /status.json (subset of what we surface).
+// Status decodes only the router-link RSSI used by diagnostics.
 type Status struct {
-	PairingStatus string `json:"pairing_status"`
-	UpTime        int64  `json:"up_time"`
-	Firmware      struct {
-		ESP string `json:"esp"`
-		EFR string `json:"efr"`
-	} `json:"firmware"`
 	WiFi struct {
-		IP        string `json:"ip"`
-		SSID      string `json:"ssid"`
-		BSSID     string `json:"bssid"`
-		RSSI      int    `json:"rssi"`
-		Connected bool   `json:"connected"`
+		RSSI int `json:"rssi"`
 	} `json:"wifi_status"`
-	MQTT struct {
-		Connected  bool `json:"connected"`
-		Subscribed bool `json:"subscribed"`
-	} `json:"mqtt_status"`
-	OTAUpdateRunning bool `json:"ota_update_running"`
-}
-
-// OTAEntry mirrors one entry of /ota_manifest.json (subset).
-type OTAEntry struct {
-	Model           string `json:"model"`
-	OTAIndex        int    `json:"ota_index"`
-	CurrentVersion  string `json:"current_version"`
-	ManifestVersion string `json:"manifest_version"`
-	Up2Date         bool   `json:"up2date"`
 }
 
 // FetchNode returns the bridge's view of the configured node (the pulse
@@ -75,8 +41,6 @@ func (c *Client) FetchNode(ctx context.Context) (Node, error) {
 	return Node{}, fmt.Errorf("node %d not found in /nodes.json", c.nodeID)
 }
 
-// FetchStatus returns the bridge's runtime status (WiFi, cloud-MQTT,
-// firmware versions, OTA flag).
 func (c *Client) FetchStatus(ctx context.Context) (Status, error) {
 	url := fmt.Sprintf("http://%s/status.json?timeout=0", c.host)
 	body, err := c.get(ctx, url)
@@ -88,19 +52,4 @@ func (c *Client) FetchStatus(ctx context.Context) (Status, error) {
 		return Status{}, fmt.Errorf("status decode: %w", err)
 	}
 	return s, nil
-}
-
-// FetchOTAManifest returns the per-component OTA state. Aggregating its
-// up2date flags tells whether any component has a pending firmware update.
-func (c *Client) FetchOTAManifest(ctx context.Context) ([]OTAEntry, error) {
-	url := fmt.Sprintf("http://%s/ota_manifest.json", c.host)
-	body, err := c.get(ctx, url)
-	if err != nil {
-		return nil, err
-	}
-	var entries []OTAEntry
-	if err := json.Unmarshal(body, &entries); err != nil {
-		return nil, fmt.Errorf("ota decode: %w", err)
-	}
-	return entries, nil
 }
