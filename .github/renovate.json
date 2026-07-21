@@ -14,10 +14,17 @@
   ],
   "packageRules": [
     {
+      "description": "Keep Chart.appVersion as plain SemVer; the deployable digest is pinned in values.yaml",
       "matchFileNames": ["**/Chart.yaml"],
+      "pinDigests": false
+    },
+    {
+      "description": "Bump the Helm chart version with tibber-pulse-bot image updates",
+      "matchPackageNames": ["ghcr.io/0bu/tibber-pulse-bot"],
       "bumpVersions": [
         {
-          "filePatterns": ["{{packageFileDir}}/Chart.yaml"],
+          "name": "tibber-pulse-bot Helm chart",
+          "filePatterns": ["chart/Chart.yaml"],
           "matchStrings": ["version:\\s(?<version>[^\\s]+)"],
           "bumpType": "patch"
         }
