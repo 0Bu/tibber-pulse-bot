@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
       -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
       -o /out/tibber-pulse-bot ./cmd/tibber-pulse-bot
 
-FROM gcr.io/distroless/static-debian12@sha256:6447365a6337c3732f412d1b74357b30a633831955b2bc45552b0086be907687
+FROM gcr.io/distroless/static-debian12@sha256:d75cdd72874d4790092fcb1b058493ecf6bb5bf2b2b897045b00ff01d91843f2
 COPY --from=build /out/tibber-pulse-bot /tibber-pulse-bot
 USER 65532:65532
 ENTRYPOINT ["/tibber-pulse-bot"]
