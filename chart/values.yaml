@@ -1,6 +1,6 @@
 image:
   repository: ghcr.io/0bu/tibber-pulse-bot
-  tag: 1.0.33@sha256:c1da10d8d08d38c4ebfe8584a8a41738bd93529f2462e8111f8ded3d1fa64fbe
+  tag: 1.0.34@sha256:5cba0f3242afb40ec3e715b9d35c7968d1ff74d9af8f09992c9aba14412375f0
   pullPolicy: IfNotPresent
 
 # Tibber Pulse Bridge connection
