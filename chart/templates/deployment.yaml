@@ -4,7 +4,11 @@
 {{- if not .Values.mqtt.host -}}
 {{- fail "mqtt.host is required (set --set mqtt.host=...)" -}}
 {{- end -}}
-{{- if and (not .Values.pulse.password) (not .Values.pulse.sealedSecret.encryptedPassword) (not .Values.pulse.existingSecret) -}}
+{{- $pwCount := 0 -}}
+{{- if .Values.pulse.password }}{{ $pwCount = add $pwCount 1 }}{{ end -}}
+{{- if and .Values.pulse.sealedSecret .Values.pulse.sealedSecret.encryptedPassword }}{{ $pwCount = add $pwCount 1 }}{{ end -}}
+{{- if .Values.pulse.existingSecret }}{{ $pwCount = add $pwCount 1 }}{{ end -}}
+{{- if ne $pwCount 1 -}}
 {{- fail "supply the bridge password via exactly one of: pulse.password, pulse.sealedSecret.encryptedPassword, or pulse.existingSecret" -}}
 {{- end -}}
 apiVersion: apps/v1
@@ -56,6 +60,9 @@ spec:
             {{- end }}
             {{- if .Values.quiet }}
             - --quiet
+            {{- end }}
+            {{- if .Values.verbose }}
+            - -v
             {{- end }}
           env:
             - name: TIBBER_PULSE_PASSWORD

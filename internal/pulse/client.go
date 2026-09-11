@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -15,13 +16,31 @@ type Client struct {
 	http     *http.Client
 }
 
+func cleanHost(host string) string {
+	host = strings.TrimSpace(host)
+	lower := strings.ToLower(host)
+	for _, prefix := range []string{"http://", "https://", "ws://", "wss://"} {
+		if strings.HasPrefix(lower, prefix) {
+			host = host[len(prefix):]
+			break
+		}
+	}
+	host = strings.TrimRight(host, "/")
+	return host
+}
+
 func NewClient(host, password string, nodeID int) *Client {
 	return &Client{
-		host:     host,
+		host:     cleanHost(host),
 		password: password,
 		nodeID:   nodeID,
 		http:     &http.Client{Timeout: 15 * time.Second},
 	}
+}
+
+// Host returns the sanitized bridge host or IP.
+func (c *Client) Host() string {
+	return c.host
 }
 
 // get issues an authenticated GET against the bridge and returns the raw
@@ -41,6 +60,9 @@ func (c *Client) get(ctx context.Context, url string) ([]byte, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, ErrUnauthorized
+		}
 		return nil, fmt.Errorf("pulse %s: HTTP %d", url, resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)

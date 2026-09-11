@@ -114,6 +114,7 @@ type publishedMessage struct {
 type fakeMQTTClient struct {
 	mu        sync.Mutex
 	published map[string]publishedMessage
+	subFunc   func(topic string, qos byte, callback mqtt.MessageHandler) mqtt.Token
 }
 
 func newFakeMQTTClient() *fakeMQTTClient {
@@ -153,7 +154,10 @@ func (c *fakeMQTTClient) Publish(topic string, _ byte, retain bool, payload any)
 	return &fakeToken{}
 }
 
-func (c *fakeMQTTClient) Subscribe(string, byte, mqtt.MessageHandler) mqtt.Token {
+func (c *fakeMQTTClient) Subscribe(topic string, qos byte, h mqtt.MessageHandler) mqtt.Token {
+	if c.subFunc != nil {
+		return c.subFunc(topic, qos, h)
+	}
 	return &fakeToken{err: errFakeNoSub}
 }
 func (c *fakeMQTTClient) Unsubscribe(...string) mqtt.Token { return &fakeToken{} }
@@ -321,4 +325,298 @@ func decodeConfig(t *testing.T, client *fakeMQTTClient, topic string) map[string
 		t.Errorf("discovery config %q is not retained", topic)
 	}
 	return cfg
+}
+
+type fakeMQTTMessage struct {
+	topic   string
+	payload []byte
+}
+
+func (m *fakeMQTTMessage) Duplicate() bool   { return false }
+func (m *fakeMQTTMessage) Qos() byte         { return 0 }
+func (m *fakeMQTTMessage) Retained() bool    { return true }
+func (m *fakeMQTTMessage) Topic() string     { return m.topic }
+func (m *fakeMQTTMessage) MessageID() uint16 { return 0 }
+func (m *fakeMQTTMessage) Payload() []byte   { return m.payload }
+func (m *fakeMQTTMessage) Ack()              {}
+
+func TestEnumerateRetainedConfigsSweepSuccess(t *testing.T) {
+	client := newFakeMQTTClient()
+	client.subFunc = func(topic string, qos byte, callback mqtt.MessageHandler) mqtt.Token {
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			callback(client, &fakeMQTTMessage{
+				topic:   "homeassistant/sensor/tibber-pulse-bridge-192_168_1_5_rssi/config",
+				payload: []byte(`{"name":"rssi"}`),
+			})
+			time.Sleep(10 * time.Millisecond)
+			callback(client, &fakeMQTTMessage{
+				topic:   "homeassistant/sensor/tibber-pulse-bridge-192_168_1_5_battery/config",
+				payload: []byte(`{"name":"battery"}`),
+			})
+		}()
+		return &fakeToken{}
+	}
+
+	m := newTestMQTTSink(client, "homeassistant")
+	found, ok := m.enumerateRetainedConfigs()
+	if !ok {
+		t.Fatal("enumerateRetainedConfigs failed")
+	}
+	if len(found) != 2 {
+		t.Fatalf("expected 2 retained topics, got %d: %v", len(found), found)
+	}
+
+	// Now verify cleanupLegacyBridgeDiscovery clears them with empty retained message
+	m.cleanupLegacyBridgeDiscovery("192.168.1.5", "")
+	for top := range found {
+		msg, ok := client.message(top)
+		if !ok || msg.payload != "" || !msg.retain {
+			t.Errorf("stale config %q was not cleared with empty retained message: %+v", top, msg)
+		}
+	}
+}
+
+func TestEnumerateRetainedConfigsEmptyBroker(t *testing.T) {
+	client := newFakeMQTTClient()
+	client.subFunc = func(topic string, qos byte, callback mqtt.MessageHandler) mqtt.Token {
+		// Empty broker: subscription succeeds, but no messages arrive.
+		return &fakeToken{}
+	}
+
+	m := newTestMQTTSink(client, "homeassistant")
+	start := time.Now()
+	found, ok := m.enumerateRetainedConfigs()
+	elapsed := time.Since(start)
+
+	if !ok {
+		t.Fatal("enumerateRetainedConfigs should succeed on empty broker")
+	}
+	if len(found) != 0 {
+		t.Errorf("expected 0 topics, got %d", len(found))
+	}
+	// Verify that the empty broker deadline was reduced to ~1s (not 3s)
+	if elapsed > 2*time.Second {
+		t.Errorf("sweep on empty broker took too long: %v (want <= 1.5s)", elapsed)
+	}
+}
+
+func TestManufacturerHexDoesNotOverwriteASCII(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "homeassistant")
+
+	// First telegram establishes meter_serial and manufacturer "LGZ" (ASCII)
+	err := m.Publish(context.Background(), []sml.Reading{
+		{Name: "meter_serial", Raw: "LGZ-12345678"},
+		{Name: "manufacturer", Raw: "LGZ"},
+		{Name: "power_total", Value: 100},
+	})
+	if err != nil {
+		t.Fatalf("Publish 1: %v", err)
+	}
+
+	m.mu.Lock()
+	mfg1 := m.device.Manufacturer
+	m.mu.Unlock()
+	if mfg1 != "LGZ" {
+		t.Fatalf("expected manufacturer LGZ, got %q", mfg1)
+	}
+
+	// Second telegram attempts to overwrite with hex string "4c475a"
+	err = m.Publish(context.Background(), []sml.Reading{
+		{Name: "meter_serial", Raw: "LGZ-12345678"},
+		{Name: "manufacturer", Raw: "4c475a"},
+		{Name: "power_total", Value: 105},
+	})
+	if err != nil {
+		t.Fatalf("Publish 2: %v", err)
+	}
+
+	m.mu.Lock()
+	mfg2 := m.device.Manufacturer
+	m.mu.Unlock()
+	if mfg2 != "LGZ" {
+		t.Errorf("hex string 4c475a overwrote ASCII manufacturer: got %q, want LGZ", mfg2)
+	}
+}
+
+func TestManufacturerHexIgnoredWhenInitiallyEmpty(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "homeassistant")
+
+	// First telegram contains hex string "4c475a"
+	err := m.Publish(context.Background(), []sml.Reading{
+		{Name: "meter_serial", Raw: "LGZ-12345678"},
+		{Name: "manufacturer", Raw: "4c475a"},
+		{Name: "power_total", Value: 100},
+	})
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	m.mu.Lock()
+	mfg := m.device.Manufacturer
+	m.mu.Unlock()
+	if mfg != "" {
+		t.Errorf("expected manufacturer to remain empty when hex 4c475a received, got %q", mfg)
+	}
+}
+
+func TestTOCTOUAtomicReservation(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "homeassistant")
+	m.device.MeterSerial = "LGZ-9999"
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = m.Publish(context.Background(), []sml.Reading{
+				{Name: "meter_serial", Raw: "LGZ-9999"},
+				{Name: "power_total", Value: 250},
+			})
+		}()
+	}
+	wg.Wait()
+
+	// Verify discovery was announced cleanly
+	m.mu.Lock()
+	discovered := m.readingsDiscovered["power_total"]
+	m.mu.Unlock()
+	if !discovered {
+		t.Error("power_total was not discovered")
+	}
+}
+
+func TestReadingStatePreservesCleanManufacturer(t *testing.T) {
+	t.Run("clean followed by hex preserves clean", func(t *testing.T) {
+		readings := []sml.Reading{
+			{Name: "manufacturer", Raw: "LGZ"},
+			{Name: "manufacturer", Raw: "4c475a"},
+		}
+		state := readingState(readings)
+		if state["manufacturer"] != "LGZ" {
+			t.Errorf("readingState manufacturer = %v, want LGZ", state["manufacturer"])
+		}
+	})
+
+	t.Run("hex followed by clean preserves clean", func(t *testing.T) {
+		readings := []sml.Reading{
+			{Name: "manufacturer", Raw: "4c475a"},
+			{Name: "manufacturer", Raw: "LGZ"},
+		}
+		state := readingState(readings)
+		if state["manufacturer"] != "LGZ" {
+			t.Errorf("readingState manufacturer = %v, want LGZ", state["manufacturer"])
+		}
+	})
+
+	t.Run("hex alone is excluded from state", func(t *testing.T) {
+		readings := []sml.Reading{
+			{Name: "manufacturer", Raw: "4c475a"},
+		}
+		state := readingState(readings)
+		if _, ok := state["manufacturer"]; ok {
+			t.Errorf("hex manufacturer should be excluded, got: %v", state["manufacturer"])
+		}
+	})
+}
+
+func TestNonFNNMeterSerialFallback(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "homeassistant")
+
+	// Meter without DIN 43863-5 FNN server-ID sends only server_id hex or device_id
+	err := m.Publish(context.Background(), []sml.Reading{
+		{Name: "server_id", Raw: "010203040506070809"},
+		{Name: "power_total", Value: 200},
+	})
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	m.mu.Lock()
+	serial := m.device.MeterSerial
+	m.mu.Unlock()
+	if serial != "010203040506070809" {
+		t.Errorf("expected MeterSerial to fall back to server_id, got %q", serial)
+	}
+
+	m.mu.Lock()
+	discovered := m.readingsDiscovered["power_total"]
+	m.mu.Unlock()
+	if !discovered {
+		t.Error("expected power_total discovery to succeed with fallback serial")
+	}
+}
+
+func TestMeterSerialTransitionReannouncesDiscovery(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "homeassistant")
+
+	// First telegram only has fallback serial (e.g. server_id)
+	err := m.Publish(context.Background(), []sml.Reading{
+		{Name: "server_id", Raw: "010203040506070809"},
+		{Name: "power_total", Value: 100},
+	})
+	if err != nil {
+		t.Fatalf("Publish 1: %v", err)
+	}
+
+	topicOld := "homeassistant/sensor/tibber_pulse_010203040506070809_power_total/config"
+	if _, ok := client.message(topicOld); !ok {
+		t.Fatalf("expected discovery on %s", topicOld)
+	}
+
+	// Second telegram receives decoded meter_serial
+	err = m.Publish(context.Background(), []sml.Reading{
+		{Name: "server_id", Raw: "010203040506070809"},
+		{Name: "meter_serial", Raw: "LGZ-81199038"},
+		{Name: "power_total", Value: 150},
+	})
+	if err != nil {
+		t.Fatalf("Publish 2: %v", err)
+	}
+
+	m.mu.Lock()
+	serial := m.device.MeterSerial
+	m.mu.Unlock()
+	if serial != "LGZ-81199038" {
+		t.Errorf("expected MeterSerial = LGZ-81199038, got %q", serial)
+	}
+
+	topicNew := "homeassistant/sensor/tibber_pulse_lgz_81199038_power_total/config"
+	if _, ok := client.message(topicNew); !ok {
+		t.Errorf("expected discovery re-announcement on %s after serial transition", topicNew)
+	}
+	msgOld, ok := client.message(topicOld)
+	if !ok || msgOld.payload != "" || !msgOld.retain {
+		t.Errorf("expected previous discovery topic %s to be retracted with empty retained payload, got %#v (published=%v)", topicOld, msgOld, ok)
+	}
+}
+
+func TestSetBridgeHostSanitization(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "homeassistant")
+
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"192.168.1.100", "192.168.1.100"},
+		{"http://192.168.1.100/", "192.168.1.100"},
+		{"https://bridge.local:8080/", "bridge.local:8080"},
+		{"  ws://10.0.0.1/  ", "10.0.0.1"},
+	}
+
+	for _, tc := range cases {
+		m.SetBridgeHost(tc.input)
+		m.mu.Lock()
+		got := m.device.BridgeHost
+		m.mu.Unlock()
+		if got != tc.want {
+			t.Errorf("SetBridgeHost(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
 }

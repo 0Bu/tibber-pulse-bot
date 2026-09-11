@@ -108,8 +108,9 @@ Top-level keys in `values.yaml`:
 | `mode` | `push` | `push` (WebSocket) or `poll` (HTTP) |
 | `pollInterval` | `10s` | Poll cadence (poll mode only) |
 | `wsIdleTimeout` | `60s` | Reconnect WS if no message arrives |
-| `reconnectDelay` | `1s` | Delay before reconnecting after WS drop |
+| `reconnectDelay` | `100ms` | Delay before reconnecting after WS drop |
 | `quiet` | `false` | Suppress per-update stdout one-liner |
+| `verbose` | `false` | Verbose logging: log every WS reconnect |
 | `homeAssistant.discovery` | `false` | Publish HA MQTT-Discovery configs |
 | `homeAssistant.discoveryPrefix` | `homeassistant` | HA discovery topic prefix |
 | `metricsInterval` | `60s` | Reduced bridge diagnostics JSON cadence; `0` disables |

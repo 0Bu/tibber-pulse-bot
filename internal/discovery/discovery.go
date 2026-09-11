@@ -163,10 +163,28 @@ func manufacturerName(code string) string {
 		return "EasyMeter"
 	case "EMH":
 		return "EMH metering"
-	case "ITZ":
+	case "ITZ", "ISK":
 		return "Iskraemeco"
-	case "ISK":
-		return "Iskraemeco"
+	case "DZG":
+		return "DZG Metering"
+	case "HAG":
+		return "Hager"
+	case "LOG":
+		return "Logarex"
+	case "EFR":
+		return "EFR"
+	case "KAM":
+		return "Kamstrup"
+	case "SAN":
+		return "Sensus"
+	case "PAF", "APT":
+		return "Apator"
+	case "ELS":
+		return "Elster"
+	case "ZPA":
+		return "ZPA Smart Energy"
+	case "":
+		return "Tibber"
 	}
 	return code
 }

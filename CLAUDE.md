@@ -10,9 +10,10 @@ distributable as a public GitHub project.
 
 - **Scope**: bridge → SML → MQTT (and stdout). One small binary, one container,
   one Helm chart.
-- **Non-goals**: Home Assistant integration (use
+- **Non-goals**: HACS custom component / direct integration (use
   [marq24/ha-tibber-pulse-local](https://github.com/marq24/ha-tibber-pulse-local)
-  for that), Tibber cloud GraphQL API, persistence, dashboards. Downstream
+  if you want a Home Assistant integration directly polling the bridge without
+  MQTT), Tibber cloud GraphQL API, persistence, dashboards. Downstream
   consumers (Telegraf → InfluxDB, Node-RED, Grafana) live elsewhere.
 
 ## Bridge protocol facts (don't re-research these)
@@ -62,8 +63,8 @@ distributable as a public GitHub project.
 ## Acquisition modes
 
 - **`push` is the default.** Lower latency, no polling load on the bridge.
-  Reconnect-delay default is 1 s; EOF / abnormal-close errors are returned
-  as `pulse.ErrPeerClosed` and logged silently unless `-v` is set.
+  Reconnect-delay default is 100 ms (avoids dropped telegrams during bridge idle socket drops);
+  EOF / abnormal-close errors are returned as `pulse.ErrPeerClosed` and logged silently unless `-v` is set.
 - **`poll`** is a fallback for old bridge firmware that 404s on `/ws`.
   Default interval 10 s.
 
@@ -87,6 +88,8 @@ distributable as a public GitHub project.
 - **Layout**:
   ```
   cmd/tibber-pulse-bot/   # CLI entrypoint, flag parsing, signal handling
+  cmd/sml-inspect/        # SML 1.04 inspection and decoding CLI
+  internal/discovery/     # Home Assistant MQTT discovery specifications
   internal/pulse/         # bridge HTTP client (client.go) and WS client (ws.go)
   internal/sml/           # SML parsing + OBIS-name mapping + serial decode
   internal/output/        # Sink interface; StdoutSink, CompactStdoutSink,
@@ -98,7 +101,7 @@ distributable as a public GitHub project.
 - **No new files unless needed.** Prefer editing existing modules; don't
   introduce abstractions ahead of demand.
 - **No comments that restate the code.** Only document non-obvious WHY
-  (e.g. why we strip `buf[8:len-8]`, why `--reconnect-delay` defaults to 1 s).
+  (e.g. why we strip `buf[8:len-8]`, why `--reconnect-delay` defaults to 100 ms).
 
 ## Build-time version injection
 

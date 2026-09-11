@@ -11,8 +11,17 @@
 # bricks a legitimate push. For a full audit, run the secret-scanner agent.
 set -u
 
-input=$(cat)
-cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+if [ "${1:-}" = "--scan" ] || [ -t 0 ]; then
+  cmd="git push"
+else
+  if read -t 1 -r first_line; then
+    input=$(printf '%s\n' "$first_line"; cat)
+    cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+  else
+    cmd="git push"
+  fi
+fi
+
 case "$cmd" in
   *"git push"*) ;;
   *) exit 0 ;;
@@ -47,7 +56,7 @@ added=$(git diff "$base"...HEAD 2>/dev/null | grep -E '^\+' || true)
 # shell-var references so .env.example and docker-compose.yml don't trip it.
 hits=$(printf '%s\n' "$added" \
   | grep -iE '^\+[[:space:]]*(export[[:space:]]+)?(TIBBER_PULSE_PASSWORD|MQTT_PASSWORD|pulse[._]?password)[[:space:]]*[:=]' \
-  | grep -vE '\$\{|<[^>]*>|changeme|change-me|example|dummy|placeholder|your[-_]|replace|xxxx|=[[:space:]]*("")?[[:space:]]*$' \
+  | grep -vE '\$\{|\*|<[^>]*>|changeme|change-me|example|dummy|placeholder|your[-_]|replace|xxxx|=[[:space:]]*("")?[[:space:]]*$' \
   || true)
 
 if [ -n "$hits" ]; then

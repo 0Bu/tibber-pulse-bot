@@ -19,6 +19,23 @@ import (
 // Callers should reconnect quietly without alarming the operator.
 var ErrPeerClosed = errors.New("ws: peer closed connection")
 
+// ErrIdleTimeout is returned by StreamFrames when no message was received
+// within the configured idle timeout.
+var ErrIdleTimeout = errors.New("ws: idle timeout")
+
+// ErrFirmwareNoWS indicates that the bridge responded with HTTP 404 on WebSocket
+// handshake, meaning its firmware does not support WebSocket push mode.
+var ErrFirmwareNoWS = errors.New("ws: bridge firmware too old for /ws push (HTTP 404) — use --mode poll")
+
+// ErrUnauthorized indicates HTTP 401 authentication failure against the bridge.
+var ErrUnauthorized = errors.New("bridge authentication failed (HTTP 401) — check --pulse-password")
+
+// IsPermanent reports whether err is an unrecoverable configuration/firmware error
+// where retrying will not succeed.
+func IsPermanent(err error) bool {
+	return errors.Is(err, ErrFirmwareNoWS) || errors.Is(err, ErrUnauthorized)
+}
+
 // WSFrame is one push message from the bridge: the parsed header attributes
 // and the raw body bytes (for SML mode, this is a single SML 1.04 telegram).
 type WSFrame struct {
@@ -45,8 +62,13 @@ func (c *Client) StreamFrames(ctx context.Context, idleTimeout time.Duration, on
 		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {
-		if resp != nil && resp.StatusCode == http.StatusNotFound {
-			return fmt.Errorf("ws: bridge firmware too old for /ws push (HTTP 404) — use --mode poll")
+		if resp != nil {
+			switch resp.StatusCode {
+			case http.StatusNotFound:
+				return ErrFirmwareNoWS
+			case http.StatusUnauthorized, http.StatusForbidden:
+				return ErrUnauthorized
+			}
 		}
 		return fmt.Errorf("ws dial: %w", err)
 	}
@@ -66,6 +88,9 @@ func (c *Client) StreamFrames(ctx context.Context, idleTimeout time.Duration, on
 			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 				return ctx.Err()
 			}
+			if (errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "i/o timeout")) && ctx.Err() == nil {
+				return ErrIdleTimeout
+			}
 			if isPeerClose(err) {
 				return ErrPeerClosed
 			}
@@ -84,6 +109,9 @@ func (c *Client) StreamFrames(ctx context.Context, idleTimeout time.Duration, on
 // without protocol-level error — either a clean WS close, an EOF, or a
 // CloseAbnormalClosure (1006), all expected periodically with this firmware.
 func isPeerClose(err error) bool {
+	if err == nil {
+		return false
+	}
 	if errors.Is(err, io.EOF) {
 		return true
 	}
@@ -92,7 +120,7 @@ func isPeerClose(err error) bool {
 	}
 	// coder/websocket reports the underlying read error wrapped in a string.
 	s := err.Error()
-	return strings.Contains(s, "EOF") || strings.Contains(s, "connection reset")
+	return strings.Contains(s, "EOF") || strings.Contains(s, "connection reset") || strings.Contains(s, "broken pipe") || strings.Contains(s, "use of closed network connection")
 }
 
 // parseWSFrame splits "<key:value key:\"value\" ...>BODY..." into header map
