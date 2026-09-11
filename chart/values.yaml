@@ -50,7 +50,7 @@ homeAssistant:
 mode: push
 pollInterval: 10s
 wsIdleTimeout: 60s
-reconnectDelay: 1s
+reconnectDelay: 100ms
 
 # Bridge diagnostics: publish one reduced JSON document under
 # <topic>/diagnostics on this cadence. Set 0 to disable.
@@ -59,7 +59,11 @@ metricsInterval: 60s
 # Suppress per-update stdout line when publishing to MQTT
 quiet: false
 
+# Verbose: log every WebSocket reconnect (default: only real errors)
+verbose: false
+
 # Standard chart knobs
+fullnameOverride: ""
 replicaCount: 1
 resources:
   requests:

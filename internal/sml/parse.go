@@ -64,7 +64,7 @@ func ParseFrames(payload []byte) ([]Reading, error) {
 			}
 		}
 	}
-	if frames == 0 && firstErr != nil {
+	if len(out) == 0 && firstErr != nil {
 		return nil, firstErr
 	}
 	return out, nil
@@ -78,30 +78,57 @@ func entryToReading(e gosml.ListEntry) Reading {
 		Unit: unitSymbol(e.Unit),
 	}
 	switch e.Value.Typ & gosml.TYPEFIELD {
-	case gosml.TYPEINTEGER, gosml.TYPEUNSIGNED:
+	case gosml.TYPEINTEGER:
 		scaler := int(e.Scaler)
 		r.Value = float64(e.Value.DataInt) * math.Pow10(scaler)
+	case gosml.TYPEUNSIGNED:
+		scaler := int(e.Scaler)
+		val := float64(e.Value.DataInt)
+		// gosml casts 16-bit and 32-bit unsigned numbers to signed int16/int32;
+		// restore true unsigned value when the MSB is set.
+		if e.Value.DataInt < 0 {
+			switch e.Value.Typ & 0x0F {
+			case 1:
+				val = float64(uint8(e.Value.DataInt))
+			case 2:
+				val = float64(uint16(e.Value.DataInt))
+			case 4:
+				val = float64(uint32(e.Value.DataInt))
+			case 8:
+				val = float64(uint64(e.Value.DataInt))
+			}
+		}
+		r.Value = val * math.Pow10(scaler)
 	default:
 		if len(e.Value.DataBytes) > 0 {
-			b := strings.Builder{}
-			for _, x := range e.Value.DataBytes {
-				fmt.Fprintf(&b, "%02x", x)
+			cleanBytes := bytes.Trim(e.Value.DataBytes, "\x00 \t\r\n")
+			if r.Name == "manufacturer" && len(cleanBytes) > 0 && isASCIIString(cleanBytes) {
+				r.Raw = strings.ToUpper(string(cleanBytes))
+			} else {
+				b := strings.Builder{}
+				for _, x := range e.Value.DataBytes {
+					fmt.Fprintf(&b, "%02x", x)
+				}
+				r.Raw = b.String()
 			}
-			r.Raw = b.String()
 		}
 	}
 	return r
 }
 
 // derivedReadings produces synthetic readings from raw octet-string values
-// that carry structured content. Currently: decodes the FNN 10-byte server-ID
-// (OBIS 1-0:96.1.0) into manufacturer (3-letter ASCII) and serial number.
+// that carry structured content. Decodes the FNN 10-byte server-ID
+// (OBIS 1-0:96.1.0*255) into manufacturer (3-letter ASCII) and serial number.
+// Gemäß DIN 43863-5 beginnt eine FNN-Server-ID mit 0x0A (Länge 10) und 0x01 (Sparte Strom).
 func derivedReadings(r Reading, e gosml.ListEntry) []Reading {
-	if r.Name != "device_id" || len(e.Value.DataBytes) < 10 {
+	if r.Name != "server_id" || len(e.Value.DataBytes) != 10 {
 		return nil
 	}
 	b := e.Value.DataBytes
-	// FNN server-ID layout: [prefix][medium][3 ASCII manufacturer][version][4-byte serial BE]
+	if b[0] != 0x0A || b[1] != 0x01 {
+		return nil
+	}
+	// FNN server-ID layout: [prefix 0x0A][medium 0x01][3 ASCII manufacturer][version][4-byte serial BE]
 	manufacturer := string(b[2:5])
 	for _, c := range manufacturer {
 		if c < 'A' || c > 'Z' {
@@ -113,6 +140,15 @@ func derivedReadings(r Reading, e gosml.ListEntry) []Reading {
 		{Name: "manufacturer", OBIS: r.OBIS, Raw: manufacturer},
 		{Name: "meter_serial", OBIS: r.OBIS, Raw: fmt.Sprintf("%s-%d", manufacturer, serial)},
 	}
+}
+
+func isASCIIString(b []byte) bool {
+	for _, x := range b {
+		if x < 0x20 || x > 0x7E {
+			return false
+		}
+	}
+	return true
 }
 
 func obisString(o gosml.OctetString) string {
@@ -163,7 +199,7 @@ func obisName(o gosml.OctetString) string {
 
 var obisNames = map[[6]byte]string{
 	{1, 0, 0, 0, 9, 255}:         "device_id",
-	{1, 0, 96, 1, 0, 255}:        "device_id",
+	{1, 0, 96, 1, 0, 255}:        "server_id",
 	{1, 0, 1, 8, 0, 255}:         "energy_import_total",
 	{1, 0, 1, 8, 1, 255}:         "energy_import_t1",
 	{1, 0, 1, 8, 2, 255}:         "energy_import_t2",

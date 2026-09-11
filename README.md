@@ -194,11 +194,11 @@ Push automatically reconnects when the bridge drops the TCP socket (every
 |---|---|---|
 | `--pulse-host` | (required) | Bridge IP / hostname |
 | `--pulse-password` | `$TIBBER_PULSE_PASSWORD` | Bridge admin password |
-| `--pulse-node` | `1` | Bridge node id (poll mode) |
+| `--pulse-node` | `1` | Bridge node id (node metrics & poll mode) |
 | `--mode` | `push` | `push` (WebSocket) or `poll` (HTTP) |
 | `--interval` | `10s` | Poll interval (poll mode) |
 | `--ws-idle-timeout` | `60s` | Reconnect WS if no message arrives |
-| `--reconnect-delay` | `1s` | Delay before reconnecting after WS drop |
+| `--reconnect-delay` | `100ms` | Delay before reconnecting after WS drop (100ms avoids dropped telegrams) |
 | `--mqtt-host` | (empty → stdout) | MQTT broker host |
 | `--mqtt-port` | `1883` | MQTT broker port |
 | `--mqtt-topic` | `tibber/pulse` | Topic prefix |
@@ -236,7 +236,8 @@ Known OBIS values use these JSON field names:
 - `voltage_l1` / `l2` / `l3`, `current_l1` / `l2` / `l3`, `frequency`
 - `manufacturer` — 3-letter ASCII (e.g. `LGZ`)
 - `meter_serial` — `<manufacturer>-<serial>` (e.g. `LGZ-81199038`)
-- `device_id` — raw 10-byte FNN server-ID as hex
+- `server_id` — raw 10-byte FNN server-ID as hex (OBIS 1-0:96.1.0*255)
+- `device_id` — equipment identifier (OBIS 1-0:0.0.9*255)
 
 Unknown OBIS codes remain available in the readings payload's nested `obis`
 object instead of creating arbitrary topics:
@@ -334,6 +335,8 @@ or config change needed; they just start appearing in MQTT.
 ```
 .
 ├── cmd/tibber-pulse-bot/   # CLI entrypoint
+├── cmd/sml-inspect/        # SML 1.04 inspection and decoding CLI
+├── internal/discovery/     # Home Assistant MQTT discovery specifications
 ├── internal/pulse/         # Bridge HTTP + WebSocket clients
 ├── internal/sml/           # SML 1.04 parsing + OBIS mapping
 ├── internal/output/        # Stdout / MQTT / Tee sinks

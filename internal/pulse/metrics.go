@@ -17,6 +17,39 @@ type Metrics struct {
 	MeterCorruptCountRecv int     `json:"meter_corrupt_reading_count_recv"`
 }
 
+func (m *Metrics) UnmarshalJSON(data []byte) error {
+	type rawMetrics struct {
+		BatteryVoltage        *float64 `json:"battery_voltage"`
+		NodeBatteryVoltage    *float64 `json:"node_battery_voltage"`
+		Temperature           *float64 `json:"temperature"`
+		NodeTemperature       *float64 `json:"node_temperature"`
+		AvgRSSI               *float64 `json:"avg_rssi"`
+		NodeAvgRSSI           *float64 `json:"node_avg_rssi"`
+		MeterCorruptCountRecv int      `json:"meter_corrupt_reading_count_recv"`
+	}
+	var raw rawMetrics
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.BatteryVoltage != nil {
+		m.BatteryVoltage = *raw.BatteryVoltage
+	} else if raw.NodeBatteryVoltage != nil {
+		m.BatteryVoltage = *raw.NodeBatteryVoltage
+	}
+	if raw.Temperature != nil {
+		m.Temperature = *raw.Temperature
+	} else if raw.NodeTemperature != nil {
+		m.Temperature = *raw.NodeTemperature
+	}
+	if raw.AvgRSSI != nil {
+		m.AvgRSSI = *raw.AvgRSSI
+	} else if raw.NodeAvgRSSI != nil {
+		m.AvgRSSI = *raw.NodeAvgRSSI
+	}
+	m.MeterCorruptCountRecv = raw.MeterCorruptCountRecv
+	return nil
+}
+
 // metricsEnvelope matches the on-the-wire shape with the two outer
 // sections, just to peel them off into a flat Metrics.
 type metricsEnvelope struct {

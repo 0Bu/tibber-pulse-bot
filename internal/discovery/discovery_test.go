@@ -27,6 +27,10 @@ func TestManufacturerName(t *testing.T) {
 		{"LGZ", "Landis+Gyr"},
 		{"lgz", "Landis+Gyr"},
 		{"ESY", "EasyMeter"},
+		{"HAG", "Hager"},
+		{"dzg", "DZG Metering"},
+		{"LOG", "Logarex"},
+		{"", "Tibber"},
 		{"XYZ", "XYZ"}, // unknown passes through
 	}
 	for _, tt := range tests {

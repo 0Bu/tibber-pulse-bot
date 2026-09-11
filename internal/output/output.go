@@ -205,7 +205,14 @@ func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix s
 // SetBridgeHost records the bridge URL shown on the combined HA device.
 func (m *MQTTSink) SetBridgeHost(host string) {
 	m.mu.Lock()
-	m.device.BridgeHost = host
+	host = strings.TrimSpace(host)
+	for _, prefix := range []string{"http://", "https://", "ws://", "wss://"} {
+		if strings.HasPrefix(strings.ToLower(host), prefix) {
+			host = host[len(prefix):]
+			break
+		}
+	}
+	m.device.BridgeHost = strings.TrimRight(host, "/")
 	m.mu.Unlock()
 }
 
@@ -234,6 +241,11 @@ func readingState(readings []sml.Reading) map[string]any {
 			value = r.Raw
 		}
 		if r.Name != "" {
+			if r.Name == "manufacturer" {
+				if str, ok := value.(string); ok && !isCleanManufacturer(str) {
+					continue
+				}
+			}
 			out[r.Name] = value
 			continue
 		}
@@ -247,16 +259,55 @@ func readingState(readings []sml.Reading) map[string]any {
 
 func (m *MQTTSink) maybeAnnounceReadings(readings []sml.Reading) error {
 	m.mu.Lock()
+	var fallbackSerial string
+	oldSerial := m.device.MeterSerial
 	for _, r := range readings {
 		switch r.Name {
 		case "meter_serial":
-			m.device.MeterSerial = r.Raw
+			if r.Raw != "" {
+				m.device.MeterSerial = r.Raw
+			}
 		case "manufacturer":
-			m.device.Manufacturer = r.Raw
+			if isCleanManufacturer(r.Raw) {
+				m.device.Manufacturer = r.Raw
+			}
+		case "server_id":
+			if fallbackSerial == "" && r.Raw != "" {
+				fallbackSerial = r.Raw
+			}
+		case "device_id":
+			if fallbackSerial == "" && r.Raw != "" {
+				fallbackSerial = r.Raw
+			}
 		}
+	}
+	if m.device.MeterSerial == "" && fallbackSerial != "" {
+		m.device.MeterSerial = fallbackSerial
+	}
+	var retractTopics []string
+	if oldSerial != "" && oldSerial != m.device.MeterSerial {
+		oldDev := m.device
+		oldDev.MeterSerial = oldSerial
+		for name := range m.readingsDiscovered {
+			if spec, ok := discovery.Sensors[name]; ok {
+				retractTopics = append(retractTopics, discovery.ConfigTopic(m.discoveryPrefix, name, spec, oldDev))
+			}
+		}
+		for name := range m.diagnosticsDiscovered {
+			if spec, ok := discovery.Diagnostics[name]; ok {
+				retractTopics = append(retractTopics, discovery.ConfigTopic(m.discoveryPrefix, name, spec, oldDev))
+			}
+		}
+		m.readingsDiscovered = map[string]bool{}
+		m.diagnosticsDiscovered = map[string]bool{}
 	}
 	dev := m.device
 	m.mu.Unlock()
+
+	for _, topic := range retractTopics {
+		_ = m.publish(topic, true, "")
+	}
+
 	if dev.MeterSerial == "" {
 		return nil
 	}
@@ -268,18 +319,33 @@ func (m *MQTTSink) maybeAnnounceReadings(readings []sml.Reading) error {
 		}
 		m.mu.Lock()
 		seen := m.readingsDiscovered[r.Name]
+		if !seen {
+			m.readingsDiscovered[r.Name] = true
+		}
 		m.mu.Unlock()
 		if seen {
 			continue
 		}
 		if err := m.announce(r.Name, spec, dev, m.prefix+"/readings"); err != nil {
+			m.mu.Lock()
+			delete(m.readingsDiscovered, r.Name)
+			m.mu.Unlock()
 			return err
 		}
-		m.mu.Lock()
-		m.readingsDiscovered[r.Name] = true
-		m.mu.Unlock()
 	}
 	return m.maybeAnnounceDiagnostics()
+}
+
+func isCleanManufacturer(s string) bool {
+	if len(s) < 2 || len(s) > 8 {
+		return false
+	}
+	for _, c := range s {
+		if c < 'A' || c > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *MQTTSink) Close() {
@@ -359,16 +425,19 @@ func (m *MQTTSink) maybeAnnounceDiagnostics() error {
 		}
 		m.mu.Lock()
 		seen := m.diagnosticsDiscovered[name]
+		if !seen {
+			m.diagnosticsDiscovered[name] = true
+		}
 		m.mu.Unlock()
 		if seen {
 			continue
 		}
 		if err := m.announce(name, spec, dev, m.prefix+"/diagnostics"); err != nil {
+			m.mu.Lock()
+			delete(m.diagnosticsDiscovered, name)
+			m.mu.Unlock()
 			return err
 		}
-		m.mu.Lock()
-		m.diagnosticsDiscovered[name] = true
-		m.mu.Unlock()
 	}
 	return nil
 }
@@ -486,7 +555,7 @@ func (m *MQTTSink) enumerateRetainedConfigs() (map[string]struct{}, bool) {
 		m.client.Unsubscribe(filter)
 		return copyStringSet(&mu, found), false
 	}
-	deadline := time.After(3 * time.Second)
+	deadline := time.After(1 * time.Second)
 	// Don't arm the short inter-message quiet window until the first retained
 	// config actually arrives: a loaded broker can take longer than the window
 	// to start replaying its retained store, and settling before then would
@@ -503,7 +572,10 @@ func (m *MQTTSink) enumerateRetainedConfigs() (map[string]struct{}, bool) {
 				quietC = quiet.C
 			} else {
 				if !quiet.Stop() {
-					<-quiet.C
+					select {
+					case <-quiet.C:
+					default:
+					}
 				}
 				quiet.Reset(500 * time.Millisecond)
 			}

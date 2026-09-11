@@ -31,6 +31,13 @@ func (c *Client) FetchNode(ctx context.Context) (Node, error) {
 	}
 	var nodes []Node
 	if err := json.Unmarshal(body, &nodes); err != nil {
+		var single Node
+		if err2 := json.Unmarshal(body, &single); err2 == nil {
+			if single.NodeID == nil || *single.NodeID == c.nodeID {
+				return single, nil
+			}
+			return Node{}, fmt.Errorf("node %d not found in /nodes.json", c.nodeID)
+		}
 		return Node{}, fmt.Errorf("nodes decode: %w", err)
 	}
 	for _, n := range nodes {

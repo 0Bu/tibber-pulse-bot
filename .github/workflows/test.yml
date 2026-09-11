@@ -79,9 +79,23 @@ jobs:
             exit 1
           fi
           if helm template r chart \
+               --set pulse.host=192.0.2.10 \
+               --set mqtt.host=mosquitto.default.svc.cluster.local \
+               --set pulse.password=dummy-9char \
+               --set pulse.existingSecret=tibber-pulse-secret >/dev/null 2>&1; then
+            echo "::error::chart rendered with multiple password modes set — the multiple passwords guard regressed"
+            exit 1
+          fi
+          if helm template r chart \
                --set mqtt.host=mosquitto.default.svc.cluster.local \
                --set pulse.password=dummy-9char >/dev/null 2>&1; then
             echo "::error::chart rendered with no pulse.host set — the host fail guard regressed"
             exit 1
           fi
-          echo "fail guards: OK (both misconfigurations rejected)"
+          if helm template r chart \
+               --set pulse.host=192.0.2.10 \
+               --set pulse.password=dummy-9char >/dev/null 2>&1; then
+            echo "::error::chart rendered with no mqtt.host set — the mqtt.host fail guard regressed"
+            exit 1
+          fi
+          echo "fail guards: OK (misconfigurations rejected)"
