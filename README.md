@@ -108,7 +108,7 @@ Run the published image, pinned by digest (kept current by Renovate):
 ```bash
 docker run --rm \
   -e TIBBER_PULSE_PASSWORD=XXXX-XXXX \
-  ghcr.io/0bu/tibber-pulse-bot:1.0.37@sha256:ca965644d07deeafbaa910944c58d24ac03230018d7bf07b2c33a74ea1719af0 \
+  ghcr.io/0bu/tibber-pulse-bot:1.0.38@sha256:00d083f318464bb1c567d4c1dc898e9770faca65ac96ce885e61d6bd695c3368 \
   --pulse-host 192.168.107.118 \
   --mqtt-host 192.168.1.27
 ```
