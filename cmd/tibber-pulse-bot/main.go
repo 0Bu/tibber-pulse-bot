@@ -44,6 +44,7 @@ func main() {
 	verbose := flag.Bool("v", false, "Verbose: log every WS reconnect (default: only real errors)")
 	quiet := flag.Bool("quiet", false, "When --mqtt-host is set, suppress the per-update stdout line")
 	metricsInterval := flag.Duration("metrics-interval", 60*time.Second, "Bridge diagnostics poll interval (set 0 to disable)")
+	expireAfter := flag.Int("expire-after", 0, "Sensor expiration in seconds for Home Assistant (0: auto, >0: seconds, <0: disable)")
 	flag.Parse()
 
 	if *showVersion {
@@ -61,6 +62,7 @@ func main() {
 		idleTimeout:       *idleTimeout,
 		reconnectDelay:    *reconnectDelay,
 		metricsInterval:   *metricsInterval,
+		expireAfter:       *expireAfter,
 		haDiscovery:       *haDiscovery,
 		haDiscoveryPrefix: *haDiscoveryPrefix,
 		mqttHost:          *mqttHost,
@@ -87,7 +89,8 @@ func main() {
 		if *haDiscovery {
 			discoveryPrefix = *haDiscoveryPrefix
 		}
-		s, err := output.NewMQTTSink(*mqttHost, *mqttPort, *mqttClientID, *mqttTopic, discoveryPrefix)
+		readingsExp, diagExp := calculateExpiration(*expireAfter, *mode, *interval, *metricsInterval)
+		s, err := output.NewMQTTSink(*mqttHost, *mqttPort, *mqttClientID, *mqttTopic, discoveryPrefix, readingsExp, diagExp)
 		if err != nil {
 			log.Fatalf("mqtt connect: %v", err)
 		}
@@ -118,6 +121,10 @@ func main() {
 		runErr = runPoll(ctx, client, sink, *interval)
 	} else {
 		runErr = runPush(ctx, client, sink, *idleTimeout, *reconnectDelay, *verbose)
+		if errors.Is(runErr, errFallbackToPoll) && ctx.Err() == nil {
+			log.Printf("switching to poll mode (interval=%s)", *interval)
+			runErr = runPoll(ctx, client, sink, *interval)
+		}
 	}
 
 	cancel()
@@ -242,12 +249,22 @@ func logBridgeStdout(u output.BridgeUpdate) {
 		m.MeterCorruptCountRecv, avail, lastData)
 }
 
+var errFallbackToPoll = errors.New("ws does not deliver SML frames; falling back to poll")
+
 func runPush(ctx context.Context, c *pulse.Client, sink output.Sink, idle, reconnectDelay time.Duration, verbose bool) error {
 	currentBackoff := reconnectDelay
+	totalFrames := 0
+
 	for ctx.Err() == nil {
+		currentIdle := idle
+		if totalFrames == 0 && currentIdle > 15*time.Second {
+			currentIdle = 15 * time.Second
+		}
+
 		receivedFrames := 0
-		err := c.StreamFrames(ctx, idle, func(f pulse.WSFrame) {
+		err := c.StreamFrames(ctx, currentIdle, func(f pulse.WSFrame) {
 			receivedFrames++
+			totalFrames++
 			topic := f.Header["topic"]
 			// Only SML telegrams carry parseable payload here. Other topics
 			// (e.g. metrics/status) we silently ignore for now.
@@ -270,12 +287,25 @@ func runPush(ctx context.Context, c *pulse.Client, sink output.Sink, idle, recon
 			return nil
 		}
 		if pulse.IsPermanent(err) {
+			if errors.Is(err, pulse.ErrFirmwareNoWS) {
+				log.Printf("ws not supported by bridge firmware (HTTP 404): falling back to poll")
+				return fmt.Errorf("%w: %w", errFallbackToPoll, err)
+			}
 			log.Printf("ws fatal: %v", err)
 			return err
 		}
 		if receivedFrames > 0 {
 			currentBackoff = reconnectDelay
+		} else if totalFrames == 0 && errors.Is(err, pulse.ErrIdleTimeout) {
+			probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
+			data, probeErr := c.FetchData(probeCtx)
+			probeCancel()
+			if probeErr == nil && len(data) > 0 {
+				log.Printf("ws: no frames received on /ws (%v), but HTTP polling succeeded (%d bytes); falling back to poll mode", err, len(data))
+				return errFallbackToPoll
+			}
 		}
+
 		// Bridge tears down the WS every ~1.1 s when idle — that's expected firmware behavior.
 		// Reconnect immediately after reconnectDelay (default 100ms) to avoid dropping meter frames.
 		var sleepDuration time.Duration
@@ -311,6 +341,7 @@ type botConfig struct {
 	idleTimeout       time.Duration
 	reconnectDelay    time.Duration
 	metricsInterval   time.Duration
+	expireAfter       int
 	haDiscovery       bool
 	haDiscoveryPrefix string
 	mqttHost          string
@@ -359,4 +390,32 @@ func validateConfig(cfg botConfig) error {
 		}
 	}
 	return nil
+}
+
+func calculateExpiration(expireAfter int, mode string, pollInterval, metricsInterval time.Duration) (int, int) {
+	readingsExp := expireAfter
+	if readingsExp == 0 {
+		if mode == "poll" {
+			readingsExp = int(3 * pollInterval.Seconds())
+			if readingsExp < 30 {
+				readingsExp = 30
+			}
+		} else {
+			readingsExp = 30
+		}
+	} else if readingsExp < 0 {
+		readingsExp = 0
+	}
+
+	diagExp := 0
+	if metricsInterval > 0 {
+		diagExp = int(3 * metricsInterval.Seconds())
+		if readingsExp > 0 && readingsExp > diagExp {
+			diagExp = readingsExp
+		}
+	}
+	if expireAfter < 0 {
+		diagExp = 0
+	}
+	return readingsExp, diagExp
 }

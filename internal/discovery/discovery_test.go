@@ -91,3 +91,25 @@ func TestConfigTopic(t *testing.T) {
 		t.Errorf("diagnostic ConfigTopic = %q, want %q", got, want)
 	}
 }
+
+func TestBuildConfigWithOptions(t *testing.T) {
+	dev := Device{MeterSerial: "LGZ-81199038"}
+	spec := Sensors["power_total"]
+	opts := EntityOptions{
+		AvailabilityTopic: "tibber/pulse/status",
+		ExpireAfter:       45,
+	}
+	cfg := BuildConfig("power_total", spec, dev, "tibber/pulse/readings", opts)
+	if cfg["availability_topic"] != "tibber/pulse/status" {
+		t.Errorf("availability_topic = %v", cfg["availability_topic"])
+	}
+	if cfg["payload_available"] != "online" {
+		t.Errorf("payload_available = %v", cfg["payload_available"])
+	}
+	if cfg["payload_not_available"] != "offline" {
+		t.Errorf("payload_not_available = %v", cfg["payload_not_available"])
+	}
+	if cfg["expire_after"] != 45 {
+		t.Errorf("expire_after = %v", cfg["expire_after"])
+	}
+}
