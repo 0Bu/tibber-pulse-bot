@@ -41,5 +41,5 @@ bash .claude/skills/live-test/scripts/run_live_test.sh
    - Verifies real-time telegram acquisition without frame loss during bridge idle socket drops.
    - Warns if the bot logged `switching to poll mode` (WS→poll fallback), because then push was not exercised.
 5. **Live MQTT round-trip (Optional)**:
-   - Runs only if `mosquitto_sub` is installed and the broker (`$MQTT_HOST`, arg 4) accepts a connection; otherwise skipped with a notice.
+   - Needs `mosquitto_pub`/`mosquitto_sub` and a broker (`$MQTT_HOST`, arg 4) that accepts connections; otherwise the run **fails**. `LIVE_TEST_SKIP_MQTT=1` skips it explicitly, and the summary then says so — such a run does not satisfy the `$live-test` merge gate.
    - Runs the bot with `--mqtt-host --ha-discovery` and checks `tibber/pulse/readings` receives data, `tibber/pulse/status` turns `online`, and discovery configs carry `availability_topic`.

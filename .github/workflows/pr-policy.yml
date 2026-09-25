@@ -58,8 +58,10 @@ jobs:
           { jq -r '.title, (.body // "")' "$d/pr.json"; jq -r '.[].commit.message' "$d/commits.json"; } > "$d/text.txt"
           : > "$d/diff.txt"
           for sha in $(jq -r '.[].sha' "$d/commits.json"); do
-            gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.files[].patch // empty' \
-              | grep -E '^\+([^+]|$)' | cut -c2- >> "$d/diff.txt" || true
+            # A failed fetch must fail the job: skipping a commit would let the
+            # secret scan pass on an incomplete diff.
+            patch=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.files[].patch // empty')
+            { grep -E '^\+([^+]|$)' <<<"$patch" || true; } | cut -c2- >> "$d/diff.txt"
           done
 
       - name: Review gates recorded for the current head

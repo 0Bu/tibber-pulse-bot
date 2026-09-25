@@ -43,10 +43,11 @@ expect 2 "short head sha rejected" scripts/check-pr-gates.sh --body-file "$t/bod
 : > "$t/body"
 printf 'chart/values.yaml\ndocker-compose.yml\n' > "$t/files"
 meta() { printf '{"head":{"ref":"%s","repo":{"full_name":"%s"}},"base":{"repo":{"full_name":"0Bu/tibber-pulse-bot"}}}' "$1" "$2" > "$t/meta"; }
-commits() { printf '[{"commit":{"author":{"email":"%s"}}}]' "$1" > "$t/commits"; }
+commits() { printf '[{"commit":{"author":{"email":"%s"},"committer":{"email":"%s"}}}]' "$1" "${2:-$1}" > "$t/commits"; }
 rgate() { gate --meta-file "$t/meta" --commits-file "$t/commits"; }
 meta renovate/x 0Bu/tibber-pulse-bot; commits bot@renovateapp.com; expect 0 "Renovate PR exempt" rgate
 commits someone@users.noreply.github.com;                   expect 1 "hand-pushed commit on renovate/* not exempt" rgate
+commits bot@renovateapp.com someone@users.noreply.github.com; expect 1 "Renovate commit amended by a person not exempt" rgate
 commits bot@renovateapp.com; meta feature/x 0Bu/tibber-pulse-bot; expect 1 "non-renovate branch not exempt" rgate
 meta renovate/x fork/tibber-pulse-bot;                       expect 1 "fork not exempt" rgate
 meta renovate/x 0Bu/tibber-pulse-bot; printf 'internal/sml/parse.go\n' >> "$t/files"; expect 1 "Renovate PR touching code not exempt" rgate

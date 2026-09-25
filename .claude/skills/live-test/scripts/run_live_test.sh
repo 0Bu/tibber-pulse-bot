@@ -141,10 +141,23 @@ echo ""
 echo "[5/5] MQTT round-trip against ${MQTT_HOST}..."
 LT_PREFIX="tibber-livetest/pulse"
 LT_DISCOVERY="tibber-livetest/homeassistant"
-if ! command -v mosquitto_sub >/dev/null 2>&1; then
-  echo "  - skipped: mosquitto_sub not installed"
-elif ! mosquitto_sub -h "$MQTT_HOST" -t '$SYS/broker/version' -C 1 -W 3 >/dev/null 2>&1; then
-  echo "  - skipped: broker ${MQTT_HOST} not reachable"
+# Skipping is explicit: CLAUDE.md's verification protocol requires the MQTT
+# round-trip, so an unavailable broker fails the run unless the operator opts
+# out with LIVE_TEST_SKIP_MQTT=1 (and then must not tick the $live-test gate).
+MQTT_SKIPPED=""
+if [[ "${LIVE_TEST_SKIP_MQTT:-}" == 1 ]]; then
+  MQTT_SKIPPED="LIVE_TEST_SKIP_MQTT=1"
+elif ! command -v mosquitto_pub >/dev/null 2>&1 || ! command -v mosquitto_sub >/dev/null 2>&1; then
+  echo "  ✗ mosquitto_pub/mosquitto_sub not installed (set LIVE_TEST_SKIP_MQTT=1 to skip)" >&2
+  rm -f /tmp/tibber-pulse-bot-livetest; exit 1
+# A plain publish proves the broker accepts connections on any broker, unlike
+# reading $SYS topics, which may be disabled or ACL-blocked.
+elif ! timeout 5 mosquitto_pub -h "$MQTT_HOST" -t "${LT_PREFIX}/probe" -n >/dev/null 2>&1; then
+  echo "  ✗ broker ${MQTT_HOST} not reachable (set LIVE_TEST_SKIP_MQTT=1 to skip)" >&2
+  rm -f /tmp/tibber-pulse-bot-livetest; exit 1
+fi
+if [[ -n "$MQTT_SKIPPED" ]]; then
+  echo "  - skipped ($MQTT_SKIPPED)"
 else
   MQTT_LOG=$(mktemp /tmp/mqtt_live_XXXXXX.log)
   mosquitto_sub -h "$MQTT_HOST" -v -W 20 \
@@ -179,5 +192,10 @@ rm -f /tmp/tibber-pulse-bot-livetest
 # Summary
 echo ""
 echo "==================================================================="
-echo "✓ ALL LIVE TESTS COMPLETED SUCCESSFULLY AGAINST $BRIDGE_IP"
+if [[ -n "$MQTT_SKIPPED" ]]; then
+  echo "✓ BRIDGE TESTS PASSED AGAINST $BRIDGE_IP — MQTT round-trip SKIPPED"
+  echo "  (not sufficient for the \$live-test merge gate)"
+else
+  echo "✓ ALL LIVE TESTS COMPLETED SUCCESSFULLY AGAINST $BRIDGE_IP"
+fi
 echo "==================================================================="

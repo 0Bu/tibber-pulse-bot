@@ -33,15 +33,18 @@ grep -Eq '^[0-9a-f]{40}$' <<<"$head_sha" || { echo "check-pr-gates: --head-sha m
 
 # Renovate owns renovate/* branches and automerges (RENOVATE_AUTOMERGE in
 # renovate.yaml). Its PRs need no human records when they come from this repo,
-# every commit is authored by the Renovate identity configured there, and the
-# diff stays inside the files Renovate manages. Anything else — a hand-pushed
-# commit, a fork, an extra file — falls back to the normal gates.
+# every commit's author AND committer is the Renovate identity configured
+# there, and the diff stays inside the files Renovate manages. Anything else
+# — a fork, an extra file, a commit amended or rebased by a person (git keeps
+# the author but rewrites the committer) — falls back to the normal gates.
+# Deliberately forging both identities needs push access; that residual risk
+# is accepted for a single-maintainer repo.
 RENOVATE_EMAIL="bot@renovateapp.com"
 RENOVATE_FILES='^(Dockerfile|go\.mod|go\.sum|docker-compose\.yml|README\.md|CLAUDE\.md|chart/Chart\.yaml|chart/values\.yaml|\.github/workflows/[A-Za-z0-9._-]+\.ya?ml)$'
 if [ -n "$meta_file" ] && [ -n "$commits_file" ]; then
   same_repo=$(jq -r '(.head.repo.full_name // "") == (.base.repo.full_name // "-")' "$meta_file" 2>/dev/null)
   ref=$(jq -r '.head.ref // ""' "$meta_file" 2>/dev/null)
-  authors=$(jq -r '.[].commit.author.email' "$commits_file" 2>/dev/null | sort -u)
+  authors=$(jq -r '.[].commit | .author.email, .committer.email' "$commits_file" 2>/dev/null | sort -u)
   if [ "$same_repo" = true ] && [[ "$ref" == renovate/* ]] && [ "$authors" = "$RENOVATE_EMAIL" ] \
      && ! grep -vqE "$RENOVATE_FILES" "$files_file"; then
     echo "check-pr-gates: Renovate PR ($ref) touching only Renovate-managed files — no review records required."

@@ -8,7 +8,7 @@
 # Matching is by tool NAME only, never by Bash command text: a substring match
 # on "merge" would trip on commit messages and docs that merely mention it.
 # Fails CLOSED: if the PR cannot be fetched, the merge is blocked.
-set -u
+set -uo pipefail
 
 input=$(cat)
 tool=$(jq -r '.tool_name // empty' <<<"$input" 2>/dev/null)
