@@ -81,9 +81,15 @@ type Device struct {
 // it stays compact (omits null fields) without needing omitempty per field.
 type Config = map[string]any
 
+// EntityOptions configures availability and expiration on the discovery config.
+type EntityOptions struct {
+	AvailabilityTopic string
+	ExpireAfter       int
+}
+
 // BuildConfig produces the discovery payload for one reading or diagnostic.
 // All entities read one field from a shared JSON state topic.
-func BuildConfig(name string, spec SensorSpec, dev Device, stateTopic string) Config {
+func BuildConfig(name string, spec SensorSpec, dev Device, stateTopic string, opts ...EntityOptions) Config {
 	uniqueID := fmt.Sprintf("tibber_pulse_%s_%s", sanitize(dev.MeterSerial), name)
 	device := map[string]any{
 		"identifiers":  []string{dev.MeterSerial},
@@ -102,6 +108,16 @@ func BuildConfig(name string, spec SensorSpec, dev Device, stateTopic string) Co
 		"state_topic":     stateTopic,
 		"value_template":  valueTemplate(name, spec),
 		"device":          device,
+	}
+	if len(opts) > 0 {
+		if opts[0].AvailabilityTopic != "" {
+			cfg["availability_topic"] = opts[0].AvailabilityTopic
+			cfg["payload_available"] = "online"
+			cfg["payload_not_available"] = "offline"
+		}
+		if opts[0].ExpireAfter > 0 {
+			cfg["expire_after"] = opts[0].ExpireAfter
+		}
 	}
 	if spec.Unit != "" {
 		cfg["unit_of_measurement"] = spec.Unit

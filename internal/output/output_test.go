@@ -173,14 +173,17 @@ func (c *fakeMQTTClient) OptionsReader() mqtt.ClientOptionsReader { return mqtt.
 
 func newTestMQTTSink(client *fakeMQTTClient, discoveryPrefix string) *MQTTSink {
 	return &MQTTSink{
-		client:                client,
-		prefix:                "tibber/pulse",
-		discoveryPrefix:       discoveryPrefix,
-		readingsDiscovered:    map[string]bool{},
-		diagnosticsDiscovered: map[string]bool{},
-		legacyCleaned:         map[string]bool{},
-		diagnostics:           map[string]any{},
-		device:                discovery.Device{BridgeHost: "192.168.1.5"},
+		client:                 client,
+		prefix:                 "tibber/pulse",
+		discoveryPrefix:        discoveryPrefix,
+		availabilityTopic:      "tibber/pulse/status",
+		readingsExpireAfter:    30,
+		diagnosticsExpireAfter: 180,
+		readingsDiscovered:     map[string]bool{},
+		diagnosticsDiscovered:  map[string]bool{},
+		legacyCleaned:          map[string]bool{},
+		diagnostics:            map[string]any{},
+		device:                 discovery.Device{BridgeHost: "192.168.1.5"},
 	}
 }
 
@@ -618,5 +621,65 @@ func TestSetBridgeHostSanitization(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("SetBridgeHost(%q) = %q, want %q", tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestDiscoveryIncludesAvailabilityAndExpiration(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "homeassistant")
+	if err := m.Publish(context.Background(), []sml.Reading{
+		{Name: "meter_serial", Raw: "LGZ-81199038"},
+		{Name: "power_total", Value: 100},
+	}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	dev := discovery.Device{MeterSerial: "LGZ-81199038"}
+	powerTopic := discovery.ConfigTopic("homeassistant", "power_total", discovery.Sensors["power_total"], dev)
+	power := decodeConfig(t, client, powerTopic)
+
+	if power["availability_topic"] != "tibber/pulse/status" {
+		t.Errorf("availability_topic = %v, want tibber/pulse/status", power["availability_topic"])
+	}
+	if power["payload_available"] != "online" {
+		t.Errorf("payload_available = %v, want online", power["payload_available"])
+	}
+	if power["payload_not_available"] != "offline" {
+		t.Errorf("payload_not_available = %v, want offline", power["payload_not_available"])
+	}
+	if power["expire_after"] != float64(30) {
+		t.Errorf("expire_after = %v, want 30", power["expire_after"])
+	}
+
+	if err := m.PublishBridgeUpdate(BridgeUpdate{
+		Metrics: pulse.Metrics{BatteryVoltage: 3.0},
+		Node:    &pulse.Node{Available: true},
+	}); err != nil {
+		t.Fatalf("PublishBridgeUpdate: %v", err)
+	}
+	diagTopic := discovery.ConfigTopic("homeassistant", "bridge_available", discovery.Diagnostics["bridge_available"], dev)
+	diag := decodeConfig(t, client, diagTopic)
+
+	if diag["availability_topic"] != "tibber/pulse/status" {
+		t.Errorf("diag availability_topic = %v, want tibber/pulse/status", diag["availability_topic"])
+	}
+	if diag["expire_after"] != float64(180) {
+		t.Errorf("diag expire_after = %v, want 180", diag["expire_after"])
+	}
+}
+
+func TestMQTTSinkClosePublishesOffline(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "homeassistant")
+	m.Close()
+
+	msg, ok := client.message("tibber/pulse/status")
+	if !ok {
+		t.Fatal("expected status topic to be published on Close")
+	}
+	if msg.payload != "offline" {
+		t.Errorf("payload = %q, want 'offline'", msg.payload)
+	}
+	if !msg.retain {
+		t.Error("expected status message to be retained")
 	}
 }

@@ -361,3 +361,91 @@ func TestValidateConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestCalculateExpiration(t *testing.T) {
+	tests := []struct {
+		name            string
+		expireAfter     int
+		mode            string
+		pollInterval    time.Duration
+		metricsInterval time.Duration
+		wantReadings    int
+		wantDiag        int
+	}{
+		{
+			name:            "push mode auto",
+			expireAfter:     0,
+			mode:            "push",
+			pollInterval:    10 * time.Second,
+			metricsInterval: 60 * time.Second,
+			wantReadings:    30,
+			wantDiag:        180,
+		},
+		{
+			name:            "poll mode auto short interval",
+			expireAfter:     0,
+			mode:            "poll",
+			pollInterval:    5 * time.Second,
+			metricsInterval: 60 * time.Second,
+			wantReadings:    30, // max(30, 3*5) = 30
+			wantDiag:        180,
+		},
+		{
+			name:            "poll mode auto long interval",
+			expireAfter:     0,
+			mode:            "poll",
+			pollInterval:    20 * time.Second,
+			metricsInterval: 60 * time.Second,
+			wantReadings:    60, // 3*20 = 60
+			wantDiag:        180,
+		},
+		{
+			name:            "explicit positive expireAfter",
+			expireAfter:     45,
+			mode:            "push",
+			pollInterval:    10 * time.Second,
+			metricsInterval: 60 * time.Second,
+			wantReadings:    45,
+			wantDiag:        180,
+		},
+		{
+			name:            "explicit expireAfter larger than diagnostics",
+			expireAfter:     300,
+			mode:            "push",
+			pollInterval:    10 * time.Second,
+			metricsInterval: 60 * time.Second,
+			wantReadings:    300,
+			wantDiag:        300,
+		},
+		{
+			name:            "disabled negative expireAfter",
+			expireAfter:     -1,
+			mode:            "push",
+			pollInterval:    10 * time.Second,
+			metricsInterval: 60 * time.Second,
+			wantReadings:    0,
+			wantDiag:        0,
+		},
+		{
+			name:            "metricsInterval disabled",
+			expireAfter:     0,
+			mode:            "push",
+			pollInterval:    10 * time.Second,
+			metricsInterval: 0,
+			wantReadings:    30,
+			wantDiag:        0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotR, gotD := calculateExpiration(tt.expireAfter, tt.mode, tt.pollInterval, tt.metricsInterval)
+			if gotR != tt.wantReadings {
+				t.Errorf("readingsExpire = %d, want %d", gotR, tt.wantReadings)
+			}
+			if gotD != tt.wantDiag {
+				t.Errorf("diagExpire = %d, want %d", gotD, tt.wantDiag)
+			}
+		})
+	}
+}
