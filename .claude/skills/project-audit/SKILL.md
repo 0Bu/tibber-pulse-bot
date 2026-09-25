@@ -26,8 +26,11 @@ grep -nE 'flag\.(String|Bool|Int|Duration)\(' cmd/tibber-pulse-bot/main.go
 Cross-check each `--flag` and its **default** against `README.md`, `CLAUDE.md`,
 and the chart (`chart/values.yaml` + `chart/templates/deployment.yaml` args).
 Flag added but undocumented, flag removed but still documented, or a default
-that disagrees (e.g. `--reconnect-delay` 1 s, `--interval` 10 s,
-`--metrics-interval` 60 s, `--mode` push) → drift.
+that disagrees (current defaults: `--reconnect-delay` 100 ms,
+`--ws-idle-timeout` 60 s, `--interval` 10 s, `--metrics-interval` 60 s,
+`--mode` push, `--expire-after` 0 = auto) → drift. The chart must expose every
+operator-facing flag as a value (e.g. `--expire-after` ↔
+`homeAssistant.expireAfter`) and `chart/README.md`'s values table must list it.
 
 ## 2. Image version + digest sync
 
@@ -102,9 +105,37 @@ green — but confirm the `discovery.Sensors` keys and `obisNames` numeric value
 still line up, and that `CLAUDE.md`'s claim "obisNames already covers the
 extended set" matches the actual map.
 
-## 8. README behavioural claims vs code
+## 8. MQTT topic set vs docs
 
-Spot-check that headline claims still hold: default acquisition mode (`push`),
+The sink publishes exactly three state topics under `<topic-prefix>`:
+`readings` and `diagnostics` (not retained) and `status` (retained
+`online`/`offline`, also the MQTT Last Will). Confirm README "MQTT topics",
+CLAUDE.md "MQTT topic naming", and AGENTS.md's architecture diagram list the
+same set, and that no doc still claims "exactly two" topics:
+
+```bash
+grep -nE 'availabilityTopic|SetWill|"/readings"|"/diagnostics"|"/status"' internal/output/output.go
+grep -nE 'topic-prefix>/|<prefix>/|exactly two' README.md CLAUDE.md AGENTS.md
+```
+
+## 9. Bridge endpoint names
+
+Code prefers the modern `/node_data.json` / `/node_metrics.json` and falls back
+to legacy `/data.json` / `/metrics.json` (`internal/pulse/client.go`,
+`internal/pulse/metrics.go`). Docs and skills that show a curl or name an
+endpoint should mention the modern one first:
+
+```bash
+grep -rnE '/(node_)?(data|metrics)\.json' README.md CLAUDE.md AGENTS.md .claude/skills
+```
+
+A lone `/data.json` or `/metrics.json` without the modern counterpart → drift.
+
+## 10. README behavioural claims vs code
+
+Spot-check that headline claims still hold: default acquisition mode (`push`)
+and its automatic fall-back to poll (on `/ws` 404, or no WS frame while HTTP
+works),
 the `--mqtt-host` present/absent stdout behaviour, `status.json up_time` 10 ms
 ticks note, and the "no `:latest`, single `:X.Y.Z` tag" release claim vs
 `.github/workflows/docker.yml`.

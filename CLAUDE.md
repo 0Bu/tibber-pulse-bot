@@ -67,7 +67,10 @@ distributable as a public GitHub project.
   Reconnect-delay default is 100 ms (avoids dropped telegrams during bridge idle socket drops);
   EOF / abnormal-close errors are returned as `pulse.ErrPeerClosed` and logged silently unless `-v` is set.
 - **`poll`** is a fallback for old bridge firmware that 404s on `/ws`.
-  Default interval 10 s.
+  Default interval 10 s. Push mode switches to poll by itself
+  (`errFallbackToPoll` in `cmd/tibber-pulse-bot/main.go`) on a `/ws` 404
+  (`pulse.ErrFirmwareNoWS`), or when `/ws` yields no frame before the first
+  idle timeout (capped at 15 s) while an HTTP data probe succeeds.
 
 ## Stdout / logging conventions
 
@@ -159,6 +162,9 @@ distributable as a public GitHub project.
 - One reduced bridge-health JSON document → `<topic-prefix>/diagnostics` every
   `--metrics-interval`. It contains only availability, last-data age, both
   RSSIs, battery voltage, temperature, and corrupt-reading count.
+- Availability → `<topic-prefix>/status`, retained `online`/`offline`. Set as
+  MQTT Last Will, republished `online` on every (re)connect, `offline` in
+  `MQTTSink.Close()`. It is the only retained non-discovery topic.
 - Do not reintroduce per-value state topics. HA discovery configs remain one
   retained topic per entity because those are registry configuration, not
   live state.
@@ -208,6 +214,10 @@ done:
 - Discovery messages are published with **`retain: true`** (HA convention,
   so HA can rebuild its registry after restart). The `readings` and
   `diagnostics` JSON state messages are NOT retained.
+- Every config carries `availability_topic: <topic-prefix>/status` and, unless
+  `--expire-after < 0`, an `expire_after` (readings and diagnostics get
+  separate values from `calculateExpiration`; chart value
+  `homeAssistant.expireAfter`).
 - `unique_id` and `object_id` derive from `tibber_pulse_<serial>_<sensor>`
   (lowercased, non-alphanumerics → underscore) — stable across restarts and
   bot upgrades.
@@ -222,7 +232,13 @@ just written down:
 
 - **Skills**: `verify` (static gates + helm render + e2e), `release` (drive the
   release pipeline), `project-audit` (find doc drift / cross-file
-  inconsistencies — run it before a merge or whenever docs may have drifted).
+  inconsistencies — run it before a merge or whenever docs may have drifted),
+  `chart-lint` (full password-mode / fail-guard / knob matrix),
+  `ha-discovery-validate` (OBIS parity, availability + `expire_after`),
+  `bridge-diag` / `sml-inspect` (manual bridge + telegram debugging),
+  `live-test` (scripted e2e against the real bridge, optional MQTT round-trip),
+  `security-scan` (govulncheck + secret gate). `.agents/skills` is a symlink
+  to `.claude/skills` for non-Claude agents.
 - **Agents**: `secret-scanner` (pre-push credential + `.gitignore` audit),
   `go-reviewer` (diff vs the conventions CI can't see).
 - **Hooks** (`settings.json` + `.claude/hooks/`): block `.env` edits; `gofmt -w`

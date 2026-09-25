@@ -35,6 +35,8 @@ helm template r chart \
 
 Expect zero errors. For the other two password modes swap the last `--set` for
 `--set pulse.sealedSecret.encryptedPassword=...` or `--set pulse.existingSecret=...`.
+For a broader matrix (negative tests, `homeAssistant.expireAfter`), use the
+`chart-lint` skill.
 
 ## 3. End-to-end (run for bridge / SML / WS / output changes)
 
@@ -48,8 +50,16 @@ go build -o tibber-pulse-bot ./cmd/tibber-pulse-bot
 ./tibber-pulse-bot --pulse-host <ip> --pulse-password <pw>
 ```
 
+Watch the startup log: `switching to poll mode` means push mode fell back to
+polling (bridge 404s on `/ws`, or `/ws` delivered nothing) — report that, since
+the push path then went untested.
+
 **b. MQTT round-trip** — run the bot against the broker in one shell, subscribe
-in another, and confirm `power_total` updates every ~2–4 s:
+in another, and confirm:
+- `tibber/pulse/readings` carries `power_total` every ~2–4 s,
+- `tibber/pulse/diagnostics` arrives every `--metrics-interval` (60 s default),
+- `tibber/pulse/status` is retained `online` while running and flips to
+  `offline` after Ctrl-C (clean shutdown) — the same payload is the LWT on a crash.
 
 ```bash
 ./tibber-pulse-bot --pulse-host <ip> --pulse-password <pw> --mqtt-host <broker>
