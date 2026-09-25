@@ -141,7 +141,7 @@ Skills are available under `.agents/skills/` (and `.claude/skills/`):
 | **`chart-lint`** | Validates Helm chart across all 3 password modes, failure modes, and flags (incl. `homeAssistant.expireAfter`) | Multi-mode `helm template` testing |
 | **`security-scan`** | Audits codebase for vulnerabilities (`govulncheck`), credential leaks, and git isolation | Secret scanning, dependency checks |
 | **`ha-discovery-validate`** | Validates Home Assistant MQTT Discovery specs, OBIS-sensor parity, availability topic and `expire_after` | `TestObisNamesHaveDiscoverySpecs`, `TestCalculateExpiration` |
-| **`live-test`** | Automated end-to-end test against real bridge hardware (`192.168.107.118`) | `run_live_test.sh`, REST, SML, WS & optional MQTT round-trip |
+| **`live-test`** | Automated end-to-end test against real bridge hardware (`192.168.107.118`) | `run_live_test.sh`, REST, SML, WS & MQTT round-trip (`LIVE_TEST_SKIP_MQTT=1` to skip) |
 | **`release`** | Automates patch and minor/major releases via GitHub Actions pipeline | Workflow dispatch, tag verification |
 | **`pr-hygiene-review`** | Human pass over commits, PR text and diff for personal data, secrets and non-English prose | `scripts/check-pr-hygiene.sh` + manual read |
 

@@ -236,7 +236,7 @@ just written down:
   `chart-lint` (full password-mode / fail-guard / knob matrix),
   `ha-discovery-validate` (OBIS parity, availability + `expire_after`),
   `bridge-diag` / `sml-inspect` (manual bridge + telegram debugging),
-  `live-test` (scripted e2e against the real bridge, optional MQTT round-trip),
+  `live-test` (scripted e2e against the real bridge incl. MQTT round-trip),
   `security-scan` (govulncheck + secret gate), `pr-hygiene-review` (human half
   of the personal-data / secrets / English check). `.agents/skills` is a
   symlink to `.claude/skills` for non-Claude agents.
