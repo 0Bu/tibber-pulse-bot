@@ -14,6 +14,18 @@ cover code-level invariants; this covers the cross-file / doc ones they can't.
 Work through every check. Report `OK` for the ones that pass so the reader
 knows the audit had teeth.
 
+## 0. Mechanical subset first
+
+```bash
+scripts/check-drift.sh
+```
+
+It enforces checks 1 (flag names), 2 (image pins), 4 (paths), 5 (compose ↔
+`.env.example`), 6 (template values documented), the skill registry and cited
+Go test names — and runs in CI and the Stop hook. Fix any `DRIFT:` line first;
+the checks below then cover what a script can't judge (defaults, wording,
+behavioural claims).
+
 ## 1. CLI flags vs documentation
 
 Flags are the contract. Every flag in `cmd/tibber-pulse-bot/main.go` should be
@@ -146,3 +158,14 @@ Emit a short report grouped as **drift** (needs a fix, with `file:line` and the
 one-line correction) and **OK** (checks that passed). If everything is clean,
 say so plainly and list the checks run. This skill only reports — the operator
 or a follow-up change applies the fixes.
+
+## Recording the merge gate
+
+When the audit is clean on the PR head, tick its line in the PR body's
+**Merge gates** section with the bare head SHA (`git rev-parse --short=12 HEAD`):
+
+```
+- [x] `$project-audit` clean — merge gate @ 1a2b3c4d5e6f
+```
+
+Don't tick it while drift remains. Any later push re-stales the stamp.

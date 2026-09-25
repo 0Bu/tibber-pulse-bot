@@ -114,6 +114,10 @@ go vet ./...
 # Unit tests with coverage
 go test -v -cover ./...
 
+# Mechanical doc drift + merge-policy selftest (both CI-gated)
+scripts/check-drift.sh
+scripts/selftest-policy.sh
+
 # Helm lint & template render
 helm lint chart
 helm template test-plain chart \
@@ -139,6 +143,17 @@ Skills are available under `.agents/skills/` (and `.claude/skills/`):
 | **`ha-discovery-validate`** | Validates Home Assistant MQTT Discovery specs, OBIS-sensor parity, availability topic and `expire_after` | `TestObisNamesHaveDiscoverySpecs`, `TestCalculateExpiration` |
 | **`live-test`** | Automated end-to-end test against real bridge hardware (`192.168.107.118`) | `run_live_test.sh`, REST, SML, WS & optional MQTT round-trip |
 | **`release`** | Automates patch and minor/major releases via GitHub Actions pipeline | Workflow dispatch, tag verification |
+| **`pr-hygiene-review`** | Human pass over commits, PR text and diff for personal data, secrets and non-English prose | `scripts/check-pr-hygiene.sh` + manual read |
+
+### Merge gates
+
+A PR merges only when its body records every required review as a ticked,
+head-SHA-stamped line (``- [x] `$project-audit` clean — merge gate @ <sha>``,
+see `.github/pull_request_template.md`). `scripts/check-pr-gates.sh` decides
+which gates the diff needs and is enforced by the `pr-policy` workflow and the
+Claude pre-merge hook. Also enforced: `scripts/check-drift.sh` (CI `test`,
+Stop hook) and `scripts/check-pr-hygiene.sh` (pre-push hook, `pr-policy`).
+Details: CLAUDE.md > Merge gates.
 
 ---
 

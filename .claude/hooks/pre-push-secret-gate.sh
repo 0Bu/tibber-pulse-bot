@@ -4,9 +4,10 @@
 # agent is thorough but only runs when invoked; this fires on every push.
 #
 # Fails CLOSED (exit 2, blocks the push) only on high-confidence signals:
-#   1. a real `.env` file is tracked by git (only `.env.example` may be), or
+#   1. a real `.env` file is tracked by git (only `.env.example` may be),
 #   2. the outgoing commits add a real TIBBER_PULSE_PASSWORD / mqtt password
-#      value (placeholders and ${VAR} references are ignored).
+#      value (placeholders and ${VAR} references are ignored), or
+#   3. scripts/check-pr-hygiene.sh reports a finding in the outgoing commits.
 # Fails OPEN (exit 0) on anything ambiguous or any git error, so it never
 # bricks a legitimate push. For a full audit, run the secret-scanner agent.
 set -u
@@ -61,6 +62,15 @@ hits=$(printf '%s\n' "$added" \
 
 if [ -n "$hits" ]; then
   fail "outgoing commits add a real password value:"$'\n'"$hits"
+fi
+
+# 3. Commit messages and per-commit patches: personal data, tokens, a bare
+#    bridge-password-shaped code, German prose. Once pushed these live in the
+#    commit objects, so this is the last cheap place to catch them. Exit 2
+#    from the script (no merge-base, bad input) stays fail-open like the rest.
+if [ -x scripts/check-pr-hygiene.sh ]; then
+  out=$(scripts/check-pr-hygiene.sh 2>&1)
+  [ $? -eq 1 ] && fail "PR hygiene check failed:"$'\n'"$out"
 fi
 
 exit 0

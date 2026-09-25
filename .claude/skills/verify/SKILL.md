@@ -16,9 +16,11 @@ the end-to-end steps need a real bridge + broker and are run on request.
 test -z "$(gofmt -l .)" && echo "gofmt: clean" || { echo "gofmt: FAIL"; gofmt -l .; }
 go vet ./...
 go test ./...
+scripts/check-drift.sh
 ```
 
-These three are required checks on `main`. Stop and fix before going further if
+These are required checks on `main` (the Stop hook also runs them before a
+turn ends with changes). Stop and fix before going further if
 any fail.
 
 ## 2. Helm render (run for chart / output changes)

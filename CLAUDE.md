@@ -237,22 +237,56 @@ just written down:
   `ha-discovery-validate` (OBIS parity, availability + `expire_after`),
   `bridge-diag` / `sml-inspect` (manual bridge + telegram debugging),
   `live-test` (scripted e2e against the real bridge, optional MQTT round-trip),
-  `security-scan` (govulncheck + secret gate). `.agents/skills` is a symlink
-  to `.claude/skills` for non-Claude agents.
+  `security-scan` (govulncheck + secret gate), `pr-hygiene-review` (human half
+  of the personal-data / secrets / English check). `.agents/skills` is a
+  symlink to `.claude/skills` for non-Claude agents.
 - **Agents**: `secret-scanner` (pre-push credential + `.gitignore` audit),
   `go-reviewer` (diff vs the conventions CI can't see).
 - **Hooks** (`settings.json` + `.claude/hooks/`): block `.env` edits; `gofmt -w`
-  on save; a **pre-push secret gate**; and a **pre-merge review gate** that
-  blocks a PR merge (the GitHub MCP `merge_pull_request` / `enable_pr_auto_merge`
-  tools) until a review is recorded for the merged commit. After running
-  `/code-review` + `project-audit`
-  clean, record approval with
-  `bash .claude/hooks/pre-merge-review-gate.sh --approve`, then retry the merge.
-  The gate only covers merges Claude performs — for GitHub-UI merges use branch
-  protection and a required check.
+  on save; a **pre-push gate** (tracked `.env`, password assignments, and
+  `scripts/check-pr-hygiene.sh` over the outgoing commits); a **Stop gate**
+  (`stop-verify.sh`: gofmt / vet / test when Go changed, plus
+  `scripts/check-drift.sh`, before a turn may end with changes on the branch);
+  and a **pre-merge gate** on the GitHub MCP `merge_pull_request` /
+  `enable_pr_auto_merge` tools that runs `scripts/check-pr-gates.sh` against
+  the live PR (see *Merge gates*).
 
-CI mirrors the enforceable subset: `test.yml` runs gofmt / vet / go test **and**
-`helm lint` + a render of all three password modes on every PR.
+CI mirrors the enforceable subset: `test.yml` runs gofmt / vet / go test,
+`scripts/check-drift.sh` and `scripts/selftest-policy.sh` (proves the policy
+scripts can still fail), plus `helm lint` + a render of all three password
+modes, on every PR; `pr-policy.yml` enforces the merge gates.
+
+## Merge gates
+
+Every PR records its reviews in the body's **Merge gates** section
+([`.github/pull_request_template.md`](.github/pull_request_template.md)) as a
+ticked task line with a **bare** stamp of the current head SHA:
+
+```
+- [x] `$project-audit` clean — merge gate @ 1a2b3c4d5e6f
+```
+
+`scripts/check-pr-gates.sh` decides which gates the diff needs: always
+`$code-review`, `$project-audit`, `$pr-hygiene-review`; `$ha-discovery-validate`
+for `internal/discovery|output|sml/` or `cmd/tibber-pulse-bot/`; `$chart-lint`
+for `chart/`; `$live-test` for `internal/pulse|sml/` (the end-to-end run the
+Verification protocol already demands). A push re-stales every stamp. Only tick
+a gate after running it on that head — the check verifies syntax and
+freshness, not that the review happened.
+
+- **Enforced twice**: `pr-policy.yml` (`pull_request_target`, job `gates`,
+  scripts loaded from the protected base, never runs PR code; it also runs
+  `check-pr-hygiene.sh` on the PR title/body and every commit's patch) and the
+  Claude pre-merge hook (same script, fails closed if the PR can't be fetched).
+  Make `gates` a required status check on `main` so GitHub-UI merges are
+  covered too.
+- **Renovate exemption**: a same-repo `renovate/*` PR whose commits are all
+  authored by `bot@renovateapp.com` and which only touches Renovate-managed
+  files (Dockerfile, go.mod/sum, compose, README/CLAUDE.md pins, chart
+  `values.yaml`/`Chart.yaml`, workflows) needs no records, so
+  `RENOVATE_AUTOMERGE` keeps working. A hand-pushed commit on the branch
+  voids the exemption.
+- Never weaken a gate, regex or allowlist to get a PR green; fix the PR.
 
 ## Out-of-scope reminders for future work
 
