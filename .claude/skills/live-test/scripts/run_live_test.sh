@@ -43,14 +43,17 @@ echo ""
 echo "[2/5] Querying bridge status, nodes, and metrics..."
 STATUS_JSON=$(curl -s -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/status.json?timeout=0")
 NODES_JSON=$(curl -s -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/nodes.json")
-METRICS_JSON=$(curl -s -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/metrics.json?node_id=${NODE_ID}")
+METRICS_JSON=$(curl -s -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/node_metrics.json?node_id=${NODE_ID}")
+if echo "$METRICS_JSON" | grep -q -i "Nothing matches"; then
+  METRICS_JSON=$(curl -s -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/metrics.json?node_id=${NODE_ID}")
+fi
 
 WIFI_RSSI=$(echo "$STATUS_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin).get('wifi_status', {}).get('rssi', 'n/a'))" 2>/dev/null || echo "n/a")
 NODE_AVAIL=$(echo "$NODES_JSON" | python3 -c "import sys, json; nodes=json.load(sys.stdin); print(next((n.get('available') for n in nodes if n.get('node_id')==${NODE_ID}), 'n/a'))" 2>/dev/null || echo "n/a")
 NODE_EUI=$(echo "$NODES_JSON" | python3 -c "import sys, json; nodes=json.load(sys.stdin); print(next((n.get('eui') for n in nodes if n.get('node_id')==${NODE_ID}), 'n/a'))" 2>/dev/null || echo "n/a")
-VOLT=$(echo "$METRICS_JSON" | python3 -c "import sys, json; m=json.load(sys.stdin).get('node_status', {}); print(m.get('battery_voltage', m.get('node_battery_voltage', 'n/a')))" 2>/dev/null || echo "n/a")
-TEMP=$(echo "$METRICS_JSON" | python3 -c "import sys, json; m=json.load(sys.stdin).get('node_status', {}); print(m.get('temperature', m.get('node_temperature', 'n/a')))" 2>/dev/null || echo "n/a")
-LINK_RSSI=$(echo "$METRICS_JSON" | python3 -c "import sys, json; m=json.load(sys.stdin).get('node_status', {}); print(m.get('avg_rssi', m.get('node_avg_rssi', 'n/a')))" 2>/dev/null || echo "n/a")
+VOLT=$(echo "$METRICS_JSON" | python3 -c "import sys, json; data=json.load(sys.stdin); m=data.get('node') or data.get('node_status') or {}; print(m.get('battery_voltage', m.get('node_battery_voltage', 'n/a')))" 2>/dev/null || echo "n/a")
+TEMP=$(echo "$METRICS_JSON" | python3 -c "import sys, json; data=json.load(sys.stdin); m=data.get('node') or data.get('node_status') or {}; print(m.get('temperature', m.get('node_temperature', 'n/a')))" 2>/dev/null || echo "n/a")
+LINK_RSSI=$(echo "$METRICS_JSON" | python3 -c "import sys, json; data=json.load(sys.stdin); m=data.get('node') or data.get('node_status') or {}; print(m.get('avg_rssi', m.get('node_avg_rssi', 'n/a')))" 2>/dev/null || echo "n/a")
 
 echo "  ✓ Status:   WiFi RSSI=${WIFI_RSSI} dBm"
 echo "  ✓ Node:     EUI=${NODE_EUI}, Available=${NODE_AVAIL}"
@@ -62,9 +65,12 @@ echo "[3/5] Polling binary SML telegram and decoding with sml-inspect..."
 TMP_SML=$(mktemp /tmp/sml_live_XXXXXX.bin)
 SML_LEN=0
 for attempt in {1..5}; do
-  curl -s -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/data.json?node_id=${NODE_ID}" > "$TMP_SML"
+  HTTP_STATUS=$(curl -s -w "%{http_code}" -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/node_data.json?node_id=${NODE_ID}" -o "$TMP_SML")
+  if [[ "$HTTP_STATUS" == "404" ]]; then
+    HTTP_STATUS=$(curl -s -w "%{http_code}" -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/data.json?node_id=${NODE_ID}" -o "$TMP_SML")
+  fi
   SML_LEN=$(wc -c < "$TMP_SML" | tr -d ' ')
-  if [[ "$SML_LEN" -gt 0 ]]; then
+  if [[ "$SML_LEN" -gt 0 && "$HTTP_STATUS" == "200" ]]; then
     break
   fi
   sleep 1

@@ -14,8 +14,10 @@ This document defines architecture, protocols, coding invariants, verification p
 ┌──────────────────────────────────────────────┐
 │             Tibber Pulse Bridge              │
 │  - Push:    ws://<host>/ws                   │
-│  - Poll:    http://<host>/data.json          │
-│  - Health:  /metrics.json, /nodes.json, ...  │
+│  - Push:    ws://<host>/ws                   │
+│  - Poll:    http://<host>/node_data.json     │
+│             (or /data.json on older FW)      │
+│  - Health:  /node_metrics.json, /nodes.json  │
 └──────────────────────┬───────────────────────┘
                        │ SML 1.04 / HTTP
                        ▼
@@ -41,7 +43,8 @@ This document defines architecture, protocols, coding invariants, verification p
 
 - **Bridge Credentials**: Authentication is always HTTP Basic Auth `admin:<password>` (9-character QR code sticker password).
 - **Push Mode (`ws://<host>/ws`)**: Streams framed telegrams `<header>BODY`. Non-SML topics or bodies under 16 bytes are ignored. Reconnects quietly on EOF or idle timeout. Stops deterministically on permanent HTTP 401 (invalid password) or HTTP 404 (legacy bridge firmware).
-- **Poll Mode (`http://<host>/data.json?node_id=N`)**: Polled at `--interval`. Returns binary SML 1.04, not JSON.
+- **Poll Mode (`http://<host>/node_data.json?node_id=N` or `/data.json?node_id=N`)**: Polled at `--interval`. Returns binary SML 1.04, not JSON. Modern firmware uses `/node_data.json`, older firmware uses `/data.json`; the client automatically detects and caches the working endpoint.
+- **Diagnostics Endpoints (`/node_metrics.json` or `/metrics.json`)**: Modern firmware uses `/node_metrics.json` with top-level `node`/`ir`/`hub` sections; legacy firmware uses `/metrics.json` with `node_status`/`hub_attachments`. The client seamlessly parses both schemas.
 - **SML Framing**: Multiples of 4 bytes, starting with `1b 1b 1b 1b 01 01 01 01` and ending with `1b 1b 1b 1b 1a [pad] [crc16]`.
 - **DIN 43863-5 FNN Server-ID**: Exactly 10 bytes starting with `0x0A 0x01`, followed by 3 uppercase ASCII characters for the manufacturer (e.g. `LGZ`, `EMH`, `ESY`, `ITZ`, `ISK`), generation byte, and 4-byte big-endian serial number. OBIS `1-0:96.1.0*255` is `server_id`; OBIS `1-0:0.0.9*255` is `device_id`.
 - **Manufacturer Preservation**: An ASCII manufacturer name (`LGZ`) must never be overwritten by a raw hex string representation (`4c475a`).
@@ -130,7 +133,7 @@ Skills are available under `.agents/skills/` (and `.claude/skills/`):
 | **`verify`** | Runs full verification protocol (gofmt, vet, test, helm render, e2e checks) | `go test ./...`, `helm lint` |
 | **`project-audit`** | Audits documentation drift, CLI flags parity, image versions, and path references | Cross-file consistency checks |
 | **`sml-inspect`** | Decodes binary SML 1.04 telegrams, hex dumps, and verifies OBIS mappings | SML framing, DIN 43863-5 FNN server-ID |
-| **`bridge-diag`** | Queries and diagnoses Tibber Pulse Bridge endpoints safely | `/metrics.json`, `/nodes.json`, `/status.json`, `/ws` |
+| **`bridge-diag`** | Queries and diagnoses Tibber Pulse Bridge endpoints safely | `/node_metrics.json`, `/metrics.json`, `/nodes.json`, `/status.json`, `/ws` |
 | **`chart-lint`** | Validates Helm chart across all 3 password modes, failure modes, and flags | Multi-mode `helm template` testing |
 | **`security-scan`** | Audits codebase for vulnerabilities (`govulncheck`), credential leaks, and git isolation | Secret scanning, dependency checks |
 | **`ha-discovery-validate`** | Validates Home Assistant MQTT Discovery specs and OBIS-sensor parity | `TestObisNamesHaveDiscoverySpecs` |
