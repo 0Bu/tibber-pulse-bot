@@ -1,6 +1,6 @@
 ---
 name: chart-lint
-description: Lint and render the tibber-pulse-bot Helm chart across all deployment scenarios. Validates the 3 mutually exclusive password modes (inline, sealedSecret, existingSecret), failure when multiple or zero passwords are set, verbose flag rendering, and resource overrides.
+description: Lint and render the tibber-pulse-bot Helm chart across all deployment scenarios. Validates the 3 mutually exclusive password modes (inline, sealedSecret, existingSecret), failure when multiple or zero passwords are set, verbose flag rendering, the Home Assistant expireAfter knob, and resource overrides.
 disable-model-invocation: true
 ---
 
@@ -77,3 +77,24 @@ helm template test-features chart \
   --set verbose=true \
   --set fullnameOverride=custom-bot | grep -E '(\- -v|name: custom-bot)'
 ```
+
+## 5. Home Assistant expiration knob
+
+`homeAssistant.expireAfter` maps to `--expire-after` and is only rendered when
+non-zero (`0` = the bot's auto default, so no arg). A negative value must still
+render — it disables `expire_after`:
+
+```bash
+for v in 0 45 -1; do
+  echo "expireAfter=$v:"
+  helm template test-expire chart \
+    --set pulse.host=192.168.1.10 \
+    --set mqtt.host=mosquitto.default.svc.cluster.local \
+    --set pulse.password=dummy \
+    --set homeAssistant.discovery=true \
+    --set homeAssistant.expireAfter=$v | grep -E -- '--(ha-discovery|expire-after)' || true
+done
+```
+
+Expect no `--expire-after` line for `0`, `--expire-after=45` and
+`--expire-after=-1` for the other two.

@@ -40,7 +40,8 @@ go run ./cmd/sml-inspect -file telegram.sml
 Or pipe a live reading directly from the local bridge:
 
 ```bash
-curl -s -u "admin:$TIBBER_PULSE_PASSWORD" "http://<bridge-ip>/data.json?node_id=1" | go run ./cmd/sml-inspect
+curl -s -u "admin:$TIBBER_PULSE_PASSWORD" "http://<bridge-ip>/node_data.json?node_id=1" | go run ./cmd/sml-inspect
+# legacy firmware: /data.json?node_id=1
 ```
 
 ## 3. Verify OBIS code mapping

@@ -120,8 +120,6 @@ except Exception:
 print(stdout)
 ' "$BRIDGE_IP" "$PASSWORD")
 
-rm -f /tmp/tibber-pulse-bot-livetest
-
 TELEGRAM_COUNT=$(echo "$PUSH_LOG" | grep -c -E 'readings\)|power=' || true)
 echo "  ✓ Received $TELEGRAM_COUNT telegram(s) in 6 seconds"
 if [[ $TELEGRAM_COUNT -gt 0 ]]; then
@@ -131,9 +129,73 @@ fi
 if echo "$PUSH_LOG" | grep -q 'bridge:'; then
   echo "  ✓ Diagnostics:    $(echo "$PUSH_LOG" | grep 'bridge:' | head -n1)"
 fi
+if echo "$PUSH_LOG" | grep -q 'switching to poll mode'; then
+  echo "  ! Bot fell back from push to poll — /ws push path was NOT exercised:"
+  echo "    $(echo "$PUSH_LOG" | grep -E 'falling back' | head -n1)"
+fi
 
-# 5. Summary
+# 5. Optional MQTT round-trip. Uses its own topic/discovery prefix and client id
+# so it never kicks the production bot off the broker or flips the production
+# availability topic to offline in Home Assistant.
+echo ""
+echo "[5/5] MQTT round-trip against ${MQTT_HOST}..."
+LT_PREFIX="tibber-livetest/pulse"
+LT_DISCOVERY="tibber-livetest/homeassistant"
+# Skipping is explicit: CLAUDE.md's verification protocol requires the MQTT
+# round-trip, so an unavailable broker fails the run unless the operator opts
+# out with LIVE_TEST_SKIP_MQTT=1 (and then must not tick the $live-test gate).
+MQTT_SKIPPED=""
+if [[ "${LIVE_TEST_SKIP_MQTT:-}" == 1 ]]; then
+  MQTT_SKIPPED="LIVE_TEST_SKIP_MQTT=1"
+elif ! command -v mosquitto_pub >/dev/null 2>&1 || ! command -v mosquitto_sub >/dev/null 2>&1; then
+  echo "  ✗ mosquitto_pub/mosquitto_sub not installed (set LIVE_TEST_SKIP_MQTT=1 to skip)" >&2
+  rm -f /tmp/tibber-pulse-bot-livetest; exit 1
+# A plain publish proves the broker accepts connections on any broker, unlike
+# reading $SYS topics, which may be disabled or ACL-blocked.
+elif ! timeout 5 mosquitto_pub -h "$MQTT_HOST" -t "${LT_PREFIX}/probe" -n >/dev/null 2>&1; then
+  echo "  ✗ broker ${MQTT_HOST} not reachable (set LIVE_TEST_SKIP_MQTT=1 to skip)" >&2
+  rm -f /tmp/tibber-pulse-bot-livetest; exit 1
+fi
+if [[ -n "$MQTT_SKIPPED" ]]; then
+  echo "  - skipped ($MQTT_SKIPPED)"
+else
+  MQTT_LOG=$(mktemp /tmp/mqtt_live_XXXXXX.log)
+  mosquitto_sub -h "$MQTT_HOST" -v -W 20 \
+    -t "${LT_PREFIX}/#" -t "${LT_DISCOVERY}/+/+/config" >"$MQTT_LOG" 2>/dev/null &
+  SUB_PID=$!
+  sleep 1
+  timeout -s INT 15 /tmp/tibber-pulse-bot-livetest \
+    --pulse-host "$BRIDGE_IP" --pulse-password "$PASSWORD" \
+    --mqtt-host "$MQTT_HOST" --mqtt-topic "$LT_PREFIX" \
+    --mqtt-client-id "tibber-pulse-bot-livetest-$$" \
+    --ha-discovery --ha-discovery-prefix "$LT_DISCOVERY" --quiet >/dev/null 2>&1 || true
+  wait "$SUB_PID" 2>/dev/null || true
+
+  check() { grep -qE "$1" "$MQTT_LOG" && echo "  ✓ $2" || { echo "  ✗ $2" >&2; MQTT_FAIL=1; }; }
+  MQTT_FAIL=0
+  check "^${LT_PREFIX}/readings .*power_total" "readings JSON with power_total"
+  check "^${LT_PREFIX}/status online" "availability topic went online"
+  check "^${LT_PREFIX}/status offline" "availability topic went offline on shutdown"
+  check "^${LT_DISCOVERY}/.*\"availability_topic\":\"${LT_PREFIX}/status\"" "discovery configs carry availability_topic"
+
+  # Clear the retained test topics again.
+  if command -v mosquitto_pub >/dev/null 2>&1; then
+    for t in "${LT_PREFIX}/status" $(grep -oE "^${LT_DISCOVERY}/[^ ]+/config" "$MQTT_LOG" | sort -u); do
+      mosquitto_pub -h "$MQTT_HOST" -r -n -t "$t" || true
+    done
+  fi
+  rm -f "$MQTT_LOG"
+  [[ $MQTT_FAIL -eq 0 ]] || { rm -f /tmp/tibber-pulse-bot-livetest; exit 1; }
+fi
+rm -f /tmp/tibber-pulse-bot-livetest
+
+# Summary
 echo ""
 echo "==================================================================="
-echo "✓ ALL LIVE TESTS COMPLETED SUCCESSFULLY AGAINST $BRIDGE_IP"
+if [[ -n "$MQTT_SKIPPED" ]]; then
+  echo "✓ BRIDGE TESTS PASSED AGAINST $BRIDGE_IP — MQTT round-trip SKIPPED"
+  echo "  (not sufficient for the \$live-test merge gate)"
+else
+  echo "✓ ALL LIVE TESTS COMPLETED SUCCESSFULLY AGAINST $BRIDGE_IP"
+fi
 echo "==================================================================="

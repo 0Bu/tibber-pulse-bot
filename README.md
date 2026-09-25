@@ -6,7 +6,8 @@ no Home Assistant required.
 
 - **Live push** via WebSocket (`ws://<bridge>/ws`) — one MQTT message per
   meter telegram (~2–4 s on a typical Landis+Gyr E220)
-- **Polling fallback** via HTTP `/data.json` for older bridge firmware
+- **Polling fallback** via HTTP `/node_data.json` (legacy `/data.json`) for
+  older bridge firmware — chosen automatically when `/ws` is unavailable
 - Decodes manufacturer + serial number from the FNN server-ID
 - Auto-reconnect on bridge-side TCP drops
 - Distroless container (~9 MB), readable as `kubectl logs` / `docker logs`
@@ -189,6 +190,10 @@ helm install tibber-pulse-bot ./chart \
 Push automatically reconnects when the bridge drops the TCP socket (every
 30–60 s typical) — those events are silent unless you pass `-v`.
 
+Push also falls back to `poll` on its own when the bridge answers `/ws` with
+404, or when `/ws` connects but delivers no frame within the first 15 s while
+the HTTP data endpoint works. The log then shows `switching to poll mode`.
+
 ## CLI flags
 
 | Flag | Default | Description |
@@ -209,14 +214,18 @@ Push automatically reconnects when the bridge drops the TCP socket (every
 | `--ha-discovery` | `false` | Publish Home Assistant MQTT-Discovery configs |
 | `--ha-discovery-prefix` | `homeassistant` | HA discovery topic prefix |
 | `--metrics-interval` | `60s` | Bridge diagnostics poll cadence; `0` disables |
+| `--expire-after` | `0` (auto) | HA `expire_after` in seconds: `0` = auto (30 s push, `max(30, 3×--interval)` poll; diagnostics `3×--metrics-interval`), `>0` = fixed, `<0` = disabled |
 | `--version` | `false` | Print version and exit |
 
 ## MQTT topics
 
-The bot publishes all live state on exactly two non-retained MQTT topics:
+The bot publishes all live state on two non-retained MQTT topics plus one
+retained availability topic:
 
 - `<topic-prefix>/readings` — one JSON object per SML telegram
 - `<topic-prefix>/diagnostics` — one JSON object per `--metrics-interval`
+- `<topic-prefix>/status` — retained `online` / `offline`; `online` on every
+  (re)connect, `offline` on clean shutdown and as MQTT Last Will on a crash
 
 Example readings payload:
 
@@ -276,6 +285,12 @@ known entity. HA groups meter readings and bridge diagnostics under one Device
 named after the meter serial (e.g. `Tibber Pulse LGZ-81199038`). Diagnostics
 appear in that device's **Diagnostics** section through
 `entity_category: diagnostic`; there is no separate bridge device.
+
+Every entity references `<topic-prefix>/status` as its availability topic, so
+HA marks the whole device unavailable when the bot stops or loses the broker.
+Entities also carry `expire_after` (see `--expire-after`), so values go
+unavailable instead of freezing when the bot is still connected but the meter
+or bridge stops delivering.
 
 ```bash
 tibber-pulse-bot --pulse-host 192.168.107.118 --pulse-password ... \

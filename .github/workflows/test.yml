@@ -37,6 +37,12 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test ./...
+      # Mechanical doc drift (flags, chart values, image pins, paths, skills,
+      # cited test names) and proof that the merge-policy scripts can still fail.
+      - name: doc drift
+        run: scripts/check-drift.sh
+      - name: policy selftest
+        run: scripts/selftest-policy.sh
 
   helm:
     runs-on: ubuntu-latest

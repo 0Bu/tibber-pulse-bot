@@ -14,7 +14,6 @@ This document defines architecture, protocols, coding invariants, verification p
 ┌──────────────────────────────────────────────┐
 │             Tibber Pulse Bridge              │
 │  - Push:    ws://<host>/ws                   │
-│  - Push:    ws://<host>/ws                   │
 │  - Poll:    http://<host>/node_data.json     │
 │             (or /data.json on older FW)      │
 │  - Health:  /node_metrics.json, /nodes.json  │
@@ -35,6 +34,7 @@ This document defines architecture, protocols, coding invariants, verification p
 │                 MQTT Broker                  │
 │  ├── <prefix>/readings    (live state)       │
 │  ├── <prefix>/diagnostics (health state)     │
+│  ├── <prefix>/status      (retained LWT)     │
 │  └── <ha-prefix>/...      (retained config)  │
 └──────────────────────────────────────────────┘
 ```
@@ -42,7 +42,7 @@ This document defines architecture, protocols, coding invariants, verification p
 ### Protocol Facts & Invariants
 
 - **Bridge Credentials**: Authentication is always HTTP Basic Auth `admin:<password>` (9-character QR code sticker password).
-- **Push Mode (`ws://<host>/ws`)**: Streams framed telegrams `<header>BODY`. Non-SML topics or bodies under 16 bytes are ignored. Reconnects quietly on EOF or idle timeout. Stops deterministically on permanent HTTP 401 (invalid password) or HTTP 404 (legacy bridge firmware).
+- **Push Mode (`ws://<host>/ws`)**: Streams framed telegrams `<header>BODY`. Non-SML topics or bodies under 16 bytes are ignored. Reconnects quietly on EOF or idle timeout. Stops deterministically on HTTP 401 (invalid password); on HTTP 404 (legacy bridge firmware), or when `/ws` delivers no frame while HTTP polling works, it falls back to poll mode automatically.
 - **Poll Mode (`http://<host>/node_data.json?node_id=N` or `/data.json?node_id=N`)**: Polled at `--interval`. Returns binary SML 1.04, not JSON. Modern firmware uses `/node_data.json`, older firmware uses `/data.json`; the client automatically detects and caches the working endpoint.
 - **Diagnostics Endpoints (`/node_metrics.json` or `/metrics.json`)**: Modern firmware uses `/node_metrics.json` with top-level `node`/`ir`/`hub` sections; legacy firmware uses `/metrics.json` with `node_status`/`hub_attachments`. The client seamlessly parses both schemas.
 - **SML Framing**: Multiples of 4 bytes, starting with `1b 1b 1b 1b 01 01 01 01` and ending with `1b 1b 1b 1b 1a [pad] [crc16]`.
@@ -114,6 +114,10 @@ go vet ./...
 # Unit tests with coverage
 go test -v -cover ./...
 
+# Mechanical doc drift + merge-policy selftest (both CI-gated)
+scripts/check-drift.sh
+scripts/selftest-policy.sh
+
 # Helm lint & template render
 helm lint chart
 helm template test-plain chart \
@@ -134,11 +138,22 @@ Skills are available under `.agents/skills/` (and `.claude/skills/`):
 | **`project-audit`** | Audits documentation drift, CLI flags parity, image versions, and path references | Cross-file consistency checks |
 | **`sml-inspect`** | Decodes binary SML 1.04 telegrams, hex dumps, and verifies OBIS mappings | SML framing, DIN 43863-5 FNN server-ID |
 | **`bridge-diag`** | Queries and diagnoses Tibber Pulse Bridge endpoints safely | `/node_metrics.json`, `/metrics.json`, `/nodes.json`, `/status.json`, `/ws` |
-| **`chart-lint`** | Validates Helm chart across all 3 password modes, failure modes, and flags | Multi-mode `helm template` testing |
+| **`chart-lint`** | Validates Helm chart across all 3 password modes, failure modes, and flags (incl. `homeAssistant.expireAfter`) | Multi-mode `helm template` testing |
 | **`security-scan`** | Audits codebase for vulnerabilities (`govulncheck`), credential leaks, and git isolation | Secret scanning, dependency checks |
-| **`ha-discovery-validate`** | Validates Home Assistant MQTT Discovery specs and OBIS-sensor parity | `TestObisNamesHaveDiscoverySpecs` |
-| **`live-test`** | Automated end-to-end test against real bridge hardware (`192.168.107.118`) | `run_live_test.sh`, REST, SML & WS |
+| **`ha-discovery-validate`** | Validates Home Assistant MQTT Discovery specs, OBIS-sensor parity, availability topic and `expire_after` | `TestObisNamesHaveDiscoverySpecs`, `TestCalculateExpiration` |
+| **`live-test`** | Automated end-to-end test against real bridge hardware (`192.168.107.118`) | `run_live_test.sh`, REST, SML, WS & MQTT round-trip (`LIVE_TEST_SKIP_MQTT=1` to skip) |
 | **`release`** | Automates patch and minor/major releases via GitHub Actions pipeline | Workflow dispatch, tag verification |
+| **`pr-hygiene-review`** | Human pass over commits, PR text and diff for personal data, secrets and non-English prose | `scripts/check-pr-hygiene.sh` + manual read |
+
+### Merge gates
+
+A PR merges only when its body records every required review as a ticked,
+head-SHA-stamped line (``- [x] `$project-audit` clean — merge gate @ <sha>``,
+see `.github/pull_request_template.md`). `scripts/check-pr-gates.sh` decides
+which gates the diff needs and is enforced by the `pr-policy` workflow and the
+Claude pre-merge hook. Also enforced: `scripts/check-drift.sh` (CI `test`,
+Stop hook) and `scripts/check-pr-hygiene.sh` (pre-push hook, `pr-policy`).
+Details: CLAUDE.md > Merge gates.
 
 ---
 

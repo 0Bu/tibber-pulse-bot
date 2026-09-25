@@ -67,7 +67,10 @@ distributable as a public GitHub project.
   Reconnect-delay default is 100 ms (avoids dropped telegrams during bridge idle socket drops);
   EOF / abnormal-close errors are returned as `pulse.ErrPeerClosed` and logged silently unless `-v` is set.
 - **`poll`** is a fallback for old bridge firmware that 404s on `/ws`.
-  Default interval 10 s.
+  Default interval 10 s. Push mode switches to poll by itself
+  (`errFallbackToPoll` in `cmd/tibber-pulse-bot/main.go`) on a `/ws` 404
+  (`pulse.ErrFirmwareNoWS`), or when `/ws` yields no frame before the first
+  idle timeout (capped at 15 s) while an HTTP data probe succeeds.
 
 ## Stdout / logging conventions
 
@@ -129,7 +132,8 @@ distributable as a public GitHub project.
 
 ## Container / deployment
 
-- **Dockerfile**: `golang:1.26-alpine` builder, cross-compiles on
+- **Dockerfile**: `golang:<minor>-alpine` builder (tag + digest kept current by
+  Renovate, so no version is repeated here), cross-compiles on
   `$BUILDPLATFORM` with `GOOS/GOARCH` (no QEMU) → `gcr.io/distroless/static-debian12`
   runtime. `CGO_ENABLED=0`, runs as UID 65532, no shell, no extra files.
 - **docker-compose.yml**: runs the published, digest-pinned GHCR image
@@ -159,6 +163,9 @@ distributable as a public GitHub project.
 - One reduced bridge-health JSON document → `<topic-prefix>/diagnostics` every
   `--metrics-interval`. It contains only availability, last-data age, both
   RSSIs, battery voltage, temperature, and corrupt-reading count.
+- Availability → `<topic-prefix>/status`, retained `online`/`offline`. Set as
+  MQTT Last Will, republished `online` on every (re)connect, `offline` in
+  `MQTTSink.Close()`. It is the only retained non-discovery topic.
 - Do not reintroduce per-value state topics. HA discovery configs remain one
   retained topic per entity because those are registry configuration, not
   live state.
@@ -208,6 +215,10 @@ done:
 - Discovery messages are published with **`retain: true`** (HA convention,
   so HA can rebuild its registry after restart). The `readings` and
   `diagnostics` JSON state messages are NOT retained.
+- Every config carries `availability_topic: <topic-prefix>/status` and, unless
+  `--expire-after < 0`, an `expire_after` (readings and diagnostics get
+  separate values from `calculateExpiration`; chart value
+  `homeAssistant.expireAfter`).
 - `unique_id` and `object_id` derive from `tibber_pulse_<serial>_<sensor>`
   (lowercased, non-alphanumerics → underscore) — stable across restarts and
   bot upgrades.
@@ -222,21 +233,61 @@ just written down:
 
 - **Skills**: `verify` (static gates + helm render + e2e), `release` (drive the
   release pipeline), `project-audit` (find doc drift / cross-file
-  inconsistencies — run it before a merge or whenever docs may have drifted).
+  inconsistencies — run it before a merge or whenever docs may have drifted),
+  `chart-lint` (full password-mode / fail-guard / knob matrix),
+  `ha-discovery-validate` (OBIS parity, availability + `expire_after`),
+  `bridge-diag` / `sml-inspect` (manual bridge + telegram debugging),
+  `live-test` (scripted e2e against the real bridge incl. MQTT round-trip),
+  `security-scan` (govulncheck + secret gate), `pr-hygiene-review` (human half
+  of the personal-data / secrets / English check). `.agents/skills` is a
+  symlink to `.claude/skills` for non-Claude agents.
 - **Agents**: `secret-scanner` (pre-push credential + `.gitignore` audit),
   `go-reviewer` (diff vs the conventions CI can't see).
 - **Hooks** (`settings.json` + `.claude/hooks/`): block `.env` edits; `gofmt -w`
-  on save; a **pre-push secret gate**; and a **pre-merge review gate** that
-  blocks a PR merge (the GitHub MCP `merge_pull_request` / `enable_pr_auto_merge`
-  tools) until a review is recorded for the merged commit. After running
-  `/code-review` + `project-audit`
-  clean, record approval with
-  `bash .claude/hooks/pre-merge-review-gate.sh --approve`, then retry the merge.
-  The gate only covers merges Claude performs — for GitHub-UI merges use branch
-  protection and a required check.
+  on save; a **pre-push gate** (tracked `.env`, password assignments, and
+  `scripts/check-pr-hygiene.sh` over the outgoing commits); a **Stop gate**
+  (`stop-verify.sh`: gofmt / vet / test when Go changed, plus
+  `scripts/check-drift.sh`, before a turn may end with changes on the branch);
+  and a **pre-merge gate** on the GitHub MCP `merge_pull_request` /
+  `enable_pr_auto_merge` tools that runs `scripts/check-pr-gates.sh` against
+  the live PR (see *Merge gates*).
 
-CI mirrors the enforceable subset: `test.yml` runs gofmt / vet / go test **and**
-`helm lint` + a render of all three password modes on every PR.
+CI mirrors the enforceable subset: `test.yml` runs gofmt / vet / go test,
+`scripts/check-drift.sh` and `scripts/selftest-policy.sh` (proves the policy
+scripts can still fail), plus `helm lint` + a render of all three password
+modes, on every PR; `pr-policy.yml` enforces the merge gates.
+
+## Merge gates
+
+Every PR records its reviews in the body's **Merge gates** section
+([`.github/pull_request_template.md`](.github/pull_request_template.md)) as a
+ticked task line with a **bare** stamp of the current head SHA:
+
+```
+- [x] `$project-audit` clean — merge gate @ 1a2b3c4d5e6f
+```
+
+`scripts/check-pr-gates.sh` decides which gates the diff needs: always
+`$code-review`, `$project-audit`, `$pr-hygiene-review`; `$ha-discovery-validate`
+for `internal/discovery|output|sml/` or `cmd/tibber-pulse-bot/`; `$chart-lint`
+for `chart/`; `$live-test` for `internal/pulse|sml/` (the end-to-end run the
+Verification protocol already demands). A push re-stales every stamp. Only tick
+a gate after running it on that head — the check verifies syntax and
+freshness, not that the review happened.
+
+- **Enforced twice**: `pr-policy.yml` (`pull_request_target`, job `gates`,
+  scripts loaded from the protected base, never runs PR code; it also runs
+  `check-pr-hygiene.sh` on the PR title/body and every commit's patch) and the
+  Claude pre-merge hook (same script, fails closed if the PR can't be fetched).
+  Make `gates` a required status check on `main` so GitHub-UI merges are
+  covered too.
+- **Renovate exemption**: a same-repo `renovate/*` PR whose commits are all
+  authored AND committed by `bot@renovateapp.com` and which only touches Renovate-managed
+  files (Dockerfile, go.mod/sum, compose, README/CLAUDE.md pins, chart
+  `values.yaml`/`Chart.yaml`, workflows) needs no records, so
+  `RENOVATE_AUTOMERGE` keeps working. A hand-pushed or amended commit on the branch
+  voids the exemption.
+- Never weaken a gate, regex or allowlist to get a PR green; fix the PR.
 
 ## Out-of-scope reminders for future work
 

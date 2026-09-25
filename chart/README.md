@@ -113,6 +113,7 @@ Top-level keys in `values.yaml`:
 | `verbose` | `false` | Verbose logging: log every WS reconnect |
 | `homeAssistant.discovery` | `false` | Publish HA MQTT-Discovery configs |
 | `homeAssistant.discoveryPrefix` | `homeassistant` | HA discovery topic prefix |
+| `homeAssistant.expireAfter` | `0` | HA `expire_after` seconds: `0` = auto, `>0` = fixed, `<0` = disabled |
 | `metricsInterval` | `60s` | Reduced bridge diagnostics JSON cadence; `0` disables |
 | `replicaCount` | `1` | Deployment replica count |
 | `resources` | 10m / 16Mi req, 64Mi limit | Container resource requests/limits |
