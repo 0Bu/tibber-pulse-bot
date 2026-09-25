@@ -148,9 +148,10 @@ A lone `/data.json` or `/metrics.json` without the modern counterpart → drift.
 Spot-check that headline claims still hold: default acquisition mode (`push`)
 and its automatic fall-back to poll (on `/ws` 404, or no WS frame while HTTP
 works),
-the `--mqtt-host` present/absent stdout behaviour, `status.json up_time` 10 ms
-ticks note, and the "no `:latest`, single `:X.Y.Z` tag" release claim vs
-`.github/workflows/docker.yml`.
+the `--mqtt-host` present/absent stdout behaviour, and the "no `:latest`,
+single `:X.Y.Z` tag" release claim vs `.github/workflows/docker.yml`. Also
+confirm no doc pins a toolchain / base-image version that Renovate bumps
+elsewhere (e.g. a `golang:1.NN-alpine` tag outside the Dockerfile).
 
 ## Reporting
 

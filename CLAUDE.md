@@ -132,7 +132,8 @@ distributable as a public GitHub project.
 
 ## Container / deployment
 
-- **Dockerfile**: `golang:1.26-alpine` builder, cross-compiles on
+- **Dockerfile**: `golang:<minor>-alpine` builder (tag + digest kept current by
+  Renovate, so no version is repeated here), cross-compiles on
   `$BUILDPLATFORM` with `GOOS/GOARCH` (no QEMU) → `gcr.io/distroless/static-debian12`
   runtime. `CGO_ENABLED=0`, runs as UID 65532, no shell, no extra files.
 - **docker-compose.yml**: runs the published, digest-pinned GHCR image
