@@ -282,10 +282,10 @@ freshness, not that the review happened.
   Make `gates` a required status check on `main` so GitHub-UI merges are
   covered too.
 - **Renovate exemption**: a same-repo `renovate/*` PR whose commits are all
-  authored by `bot@renovateapp.com` and which only touches Renovate-managed
+  authored AND committed by `bot@renovateapp.com` and which only touches Renovate-managed
   files (Dockerfile, go.mod/sum, compose, README/CLAUDE.md pins, chart
   `values.yaml`/`Chart.yaml`, workflows) needs no records, so
-  `RENOVATE_AUTOMERGE` keeps working. A hand-pushed commit on the branch
+  `RENOVATE_AUTOMERGE` keeps working. A hand-pushed or amended commit on the branch
   voids the exemption.
 - Never weaken a gate, regex or allowlist to get a PR green; fix the PR.
 
