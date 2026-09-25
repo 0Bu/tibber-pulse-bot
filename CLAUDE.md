@@ -18,7 +18,8 @@ distributable as a public GitHub project.
 
 ## Bridge protocol facts (don't re-research these)
 
-- **Data endpoint (poll)**: `GET http://<bridge>/data.json?node_id=N`
+- **Data endpoint (poll)**: `GET http://<bridge>/node_data.json?node_id=N`
+  (modern firmware) or `/data.json?node_id=N` (legacy firmware)
   with HTTP Basic auth `admin:<9-char QR-code from sticker>`. Returns raw
   binary SML 1.04 frames, **not** JSON despite the suffix.
 - **Push endpoint (live)**: `ws://<bridge>/ws`, same Basic auth (sent as
@@ -29,7 +30,7 @@ distributable as a public GitHub project.
   the first `>` byte. For SML topics, the body is the same SML 1.04 binary
   the poll endpoint returns.
 - **Bridge prereq**: `webserver_force_enable` (param 39) must be `TRUE`,
-  otherwise `/data.json` and `/ws` are dead. Set once via the bridge's
+  otherwise `/node_data.json` / `/data.json` and `/ws` are dead. Set once via the bridge's
   AP-mode console.
 - **Common bridge behaviour**: drops the WS every ~30–60 s with EOF (no
   Close frame). This is normal — silently reconnect with short backoff.

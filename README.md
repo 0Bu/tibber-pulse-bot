@@ -83,7 +83,8 @@ the front and a tiny **reset/pairing button** in a pinhole on the side
 #### 5. Verify
 
 ```bash
-curl -u admin:XXXX-XXXX -I "http://<bridge-ip>/data.json?node_id=1"
+curl -u admin:XXXX-XXXX -I "http://<bridge-ip>/node_data.json?node_id=1"
+# (or /data.json?node_id=1 on older firmware)
 # expect: HTTP/1.1 200 OK   Content-Type: text/text
 ```
 
@@ -92,7 +93,7 @@ no response at all, the bridge isn't reachable on your LAN — check DHCP /
 that it actually rejoined WiFi. If you get the SPA HTML shell from
 `http://<bridge-ip>/`, the web server is up but you may have hit the SPA
 route (`/nodes/1/data`) instead of the data endpoint
-(`/data.json?node_id=1`); use the JSON path.
+(`/node_data.json?node_id=1` or `/data.json?node_id=1`); use the JSON path.
 
 > **Note**: AP mode also doubles as a factory-reset entry point. Holding
 > the button longer (~30 s) on some firmware revisions wipes the WiFi
@@ -246,8 +247,8 @@ object instead of creating arbitrary topics:
 {"obis":{"1-0:96.50.1*1":7}}
 ```
 
-Bridge health is fetched from `/metrics.json`, `/nodes.json`, and
-`/status.json` every `--metrics-interval` (default 60s). The diagnostics JSON
+Bridge health is fetched from `/node_metrics.json` (or legacy `/metrics.json`),
+`/nodes.json`, and `/status.json` every `--metrics-interval` (default 60s). The diagnostics JSON
 is deliberately limited to the values needed to recognize a bridge, meter
 link, or WiFi problem:
 
