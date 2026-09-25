@@ -158,36 +158,45 @@ type MQTTSink struct {
 	client mqtt.Client
 	prefix string
 
-	discoveryPrefix       string
-	mu                    sync.Mutex
-	readingsDiscovered    map[string]bool
-	diagnosticsDiscovered map[string]bool
-	legacyCleaned         map[string]bool
-	device                discovery.Device
-	diagnostics           map[string]any
-	legacyEUI             string
+	discoveryPrefix        string
+	availabilityTopic      string
+	readingsExpireAfter    int
+	diagnosticsExpireAfter int
+	mu                     sync.Mutex
+	readingsDiscovered     map[string]bool
+	diagnosticsDiscovered  map[string]bool
+	legacyCleaned          map[string]bool
+	device                 discovery.Device
+	diagnostics            map[string]any
+	legacyEUI              string
 }
 
-func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix string) (*MQTTSink, error) {
+func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix string, readingsExpireAfter, diagnosticsExpireAfter int) (*MQTTSink, error) {
+	availabilityTopic := strings.TrimRight(topicPrefix, "/") + "/status"
 	m := &MQTTSink{
-		prefix:                strings.TrimRight(topicPrefix, "/"),
-		discoveryPrefix:       strings.TrimRight(discoveryPrefix, "/"),
-		readingsDiscovered:    map[string]bool{},
-		diagnosticsDiscovered: map[string]bool{},
-		legacyCleaned:         map[string]bool{},
-		diagnostics:           map[string]any{},
+		prefix:                 strings.TrimRight(topicPrefix, "/"),
+		discoveryPrefix:        strings.TrimRight(discoveryPrefix, "/"),
+		availabilityTopic:      availabilityTopic,
+		readingsExpireAfter:    readingsExpireAfter,
+		diagnosticsExpireAfter: diagnosticsExpireAfter,
+		readingsDiscovered:     map[string]bool{},
+		diagnosticsDiscovered:  map[string]bool{},
+		legacyCleaned:          map[string]bool{},
+		diagnostics:            map[string]any{},
 	}
 	opts := mqtt.NewClientOptions().
 		AddBroker(fmt.Sprintf("tcp://%s:%d", host, port)).
 		SetClientID(clientID).
 		SetAutoReconnect(true).
-		SetConnectTimeout(10 * time.Second).
+		SetConnectTimeout(10*time.Second).
 		SetCleanSession(true).
-		SetOnConnectHandler(func(mqtt.Client) {
+		SetWill(availabilityTopic, "offline", 1, true).
+		SetOnConnectHandler(func(client mqtt.Client) {
 			m.mu.Lock()
 			m.readingsDiscovered = map[string]bool{}
 			m.diagnosticsDiscovered = map[string]bool{}
 			m.mu.Unlock()
+			_ = m.publish(availabilityTopic, true, "online")
 		})
 
 	c := mqtt.NewClient(opts)
@@ -349,7 +358,12 @@ func isCleanManufacturer(s string) bool {
 }
 
 func (m *MQTTSink) Close() {
-	m.client.Disconnect(500)
+	if m.client != nil {
+		if m.availabilityTopic != "" {
+			_ = m.publish(m.availabilityTopic, true, "offline")
+		}
+		m.client.Disconnect(500)
+	}
 }
 
 // BridgeUpdate bundles the three bridge data sources used by the reduced
@@ -444,7 +458,14 @@ func (m *MQTTSink) maybeAnnounceDiagnostics() error {
 
 func (m *MQTTSink) announce(name string, spec discovery.SensorSpec, dev discovery.Device, stateTopic string) error {
 	topic := discovery.ConfigTopic(m.discoveryPrefix, name, spec, dev)
-	payload, err := discovery.MarshalConfig(discovery.BuildConfig(name, spec, dev, stateTopic))
+	var opts discovery.EntityOptions
+	opts.AvailabilityTopic = m.availabilityTopic
+	if stateTopic == m.prefix+"/readings" {
+		opts.ExpireAfter = m.readingsExpireAfter
+	} else if stateTopic == m.prefix+"/diagnostics" {
+		opts.ExpireAfter = m.diagnosticsExpireAfter
+	}
+	payload, err := discovery.MarshalConfig(discovery.BuildConfig(name, spec, dev, stateTopic, opts))
 	if err != nil {
 		return fmt.Errorf("mqtt: encode discovery %s: %w", name, err)
 	}

@@ -58,6 +58,9 @@ spec:
             - --ha-discovery
             - --ha-discovery-prefix={{ .Values.homeAssistant.discoveryPrefix }}
             {{- end }}
+            {{- if .Values.homeAssistant.expireAfter }}
+            - --expire-after={{ .Values.homeAssistant.expireAfter }}
+            {{- end }}
             {{- if .Values.quiet }}
             - --quiet
             {{- end }}
