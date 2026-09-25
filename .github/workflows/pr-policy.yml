@@ -1,0 +1,77 @@
+name: pr-policy
+
+# Merge-gate policy: the PR body must record every required review, stamped
+# with the current head SHA (scripts/check-pr-gates.sh), and the PR's commits,
+# text and patches must pass the hygiene check (scripts/check-pr-hygiene.sh).
+#
+# pull_request_target loads this workflow and the scripts from the protected
+# BASE branch, so a PR cannot weaken the policy that judges it. It must stay
+# data-only: never check out, source, or execute the PR tree here. Code checks
+# run under plain pull_request in test.yml / docker.yml.
+#
+# `edited` re-runs the check when a reviewer ticks a gate in the PR body.
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+concurrency:
+  group: pr-policy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # Keep the job name `gates` stable: branch protection requires it.
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted base policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Fetch PR data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/pr"; mkdir -p "$d"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" > "$d/pr.json"
+          head=$(jq -r '.head.sha' "$d/pr.json")
+          # A newer push/edit already queued its own run; judge only the live head.
+          [ "$head" = "$EVENT_HEAD_SHA" ] || { echo "::error::event head $EVENT_HEAD_SHA is stale; PR head is $head"; exit 1; }
+          echo "$head" > "$d/head"
+          jq -r '.body // ""' "$d/pr.json" > "$d/body.md"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" \
+            --jq '.[].filename' > "$d/files.txt"
+          [ "$(wc -l < "$d/files.txt")" -eq "$(jq -r '.changed_files' "$d/pr.json")" ] \
+            || { echo "::error::partial changed-file list"; exit 1; }
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR/commits?per_page=100" \
+            | jq 'add' > "$d/commits.json"
+          { jq -r '.title, (.body // "")' "$d/pr.json"; jq -r '.[].commit.message' "$d/commits.json"; } > "$d/text.txt"
+          : > "$d/diff.txt"
+          for sha in $(jq -r '.[].sha' "$d/commits.json"); do
+            # A failed fetch must fail the job: skipping a commit would let the
+            # secret scan pass on an incomplete diff.
+            patch=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.files[].patch // empty')
+            { grep -E '^\+([^+]|$)' <<<"$patch" || true; } | cut -c2- >> "$d/diff.txt"
+          done
+
+      - name: Review gates recorded for the current head
+        run: |
+          d="$RUNNER_TEMP/pr"
+          scripts/check-pr-gates.sh --body-file "$d/body.md" --head-sha "$(cat "$d/head")" \
+            --files-file "$d/files.txt" --meta-file "$d/pr.json" --commits-file "$d/commits.json"
+
+      - name: PR hygiene (personal data, secrets, English)
+        if: ${{ !cancelled() }}
+        run: |
+          d="$RUNNER_TEMP/pr"
+          scripts/check-pr-hygiene.sh --text "$d/text.txt" --diff "$d/diff.txt"

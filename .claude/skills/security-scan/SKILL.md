@@ -29,7 +29,16 @@ This checks:
 - No raw bridge password regex matches in staged or unstaged diffs.
 - No private key files (`*.pem`, `*.key`) accidentally staged.
 
-## 3. Git Isolation & Status
+## 3. PR hygiene (personal data, tokens, password shapes, German prose)
+
+```bash
+scripts/check-pr-hygiene.sh
+```
+
+Scans every outgoing commit's message and patch (not just the net diff). For
+the human half, use the `pr-hygiene-review` skill.
+
+## 4. Git Isolation & Status
 
 Verify that git status is clean and ignored files are not tracked:
 
