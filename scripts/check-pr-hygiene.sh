@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Mechanical half of the pr-hygiene-review gate: contributor-authored text must
 # not carry personal data or secrets, and prose must be English (the project
-# is public; see CLAUDE.md > Security). Catches what has a reliable SHAPE:
+# is public; see AGENTS.md > Security). Catches what has a reliable SHAPE:
 #   - an email outside GitHub noreply / example / the Renovate identity
 #   - an international or German phone number, a GPS coordinate pair
 #   - a private key block or a GitHub / AWS token
@@ -22,6 +22,7 @@ cd "$(dirname "$0")/.."
 
 text_file="" diff_file="" base="${HYGIENE_BASE:-origin/main}"
 while [ $# -gt 0 ]; do
+  [ "$#" -ge 2 ] || { echo "check-pr-hygiene: missing option value" >&2; exit 2; }
   case "$1" in
     --text) text_file="$2"; shift 2 ;;
     --diff) diff_file="$2"; shift 2 ;;
@@ -33,14 +34,20 @@ done
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 if [ -z "$text_file$diff_file" ]; then
   mb=$(git merge-base HEAD "$base" 2>/dev/null) || { echo "check-pr-hygiene: cannot find merge-base with $base" >&2; exit 2; }
-  git log --format='%B' "$mb"..HEAD > "$tmp/text"
+  git log --format='%B' "$mb"..HEAD > "$tmp/text" || exit 2
   # Per-commit patches, not the net diff: a secret added and removed again
   # inside the range still lives in the pushed commit objects.
-  git log --format= -p "$mb"..HEAD | grep -E '^\+([^+]|$)' | cut -c2- > "$tmp/diff" || true
+  git rev-list "$mb"..HEAD > "$tmp/commits" || exit 2
+  : > "$tmp/diff"
+  while IFS= read -r commit; do
+    git diff-tree --root -m --no-renames -p "$commit" > "$tmp/patch" || exit 2
+    sed -n '/^+[^+]/s/^+//p' "$tmp/patch" >> "$tmp/diff"
+  done < "$tmp/commits"
   text_file="$tmp/text" diff_file="$tmp/diff"
   echo "check-pr-hygiene: local mode — commits $mb..HEAD and their diff (PR text is checked in CI)"
 fi
 : "${text_file:=/dev/null}" "${diff_file:=/dev/null}"
+[ -r "$text_file" ] && [ -r "$diff_file" ] || { echo "check-pr-hygiene: input files are unreadable" >&2; exit 2; }
 
 # Git trailers are expected attribution, not prose.
 grep -viE '^(Co-Authored-By|Signed-off-by|Reviewed-by|Claude-Session):' "$text_file" > "$tmp/prose" || true
@@ -56,7 +63,8 @@ report() {  # label, file, ERE, [exclude ERE]
   [ -n "$hits" ] || return 0
   found=1
   echo "FINDING  $1:"
-  sed 's/^/           /' <<<"$hits"
+  # CI logs must not become a second publication of the credential or PII.
+  cut -d: -f1 <<<"$hits" | sed 's/^/           line /; s/$/ (redacted)/'
 }
 
 report "email address" "$tmp/all" \
@@ -72,7 +80,7 @@ pw=$(grep -noE '\b[A-Z0-9]{4}-[A-Z0-9]{4}\b' "$tmp/all" | awk -F: '$2 ~ /[A-Z]/ 
 if [ -n "$pw" ]; then
   found=1
   echo "FINDING  bridge-password-shaped token (rotate the bridge password if it is real):"
-  sed 's/^/           /' <<<"$pw"
+  cut -d: -f1 <<<"$pw" | sed 's/^/           line /; s/$/ (redacted)/'
 fi
 
 german=$(awk '
@@ -87,7 +95,7 @@ german=$(awk '
 if [ -n "$german" ]; then
   found=1
   echo "FINDING  German prose (project text is English):"
-  sed 's/^/           /' <<<"$german"
+  cut -d: -f1 <<<"$german" | sed 's/^/           line /; s/$/ (redacted)/'
 fi
 
 if [ "$found" -ne 0 ]; then

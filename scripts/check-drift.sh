@@ -42,7 +42,7 @@ done
 [ "$n" = 0 ] && ok "chart template values documented in chart/README.md"
 
 # 3. One pinned image version+digest everywhere; Chart.yaml appVersion agrees.
-pins=$(grep -hoE '[0-9]+\.[0-9]+\.[0-9]+@sha256:[a-f0-9]{64}' chart/values.yaml docker-compose.yml README.md CLAUDE.md AGENTS.md 2>/dev/null | sort -u)
+pins=$(grep -hoE '[0-9]+\.[0-9]+\.[0-9]+@sha256:[a-f0-9]{64}' chart/values.yaml docker-compose.yml README.md AGENTS.md 2>/dev/null | sort -u)
 app=$(sed -nE 's/^appVersion:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/p' chart/Chart.yaml)
 if [ "$(grep -c . <<<"$pins")" -ne 1 ]; then
   drift "image pins disagree across chart/values.yaml, docker-compose.yml, README.md: $(tr '\n' ' ' <<<"$pins")"
@@ -52,35 +52,35 @@ else
   ok "image pin ${pins%%@*} consistent (appVersion $app)"
 fi
 
-# 4. Repo paths named in CLAUDE.md / AGENTS.md exist (build outputs excluded).
+# 4. Repo paths named in AGENTS.md exist (build outputs excluded).
 n=0
-for doc in CLAUDE.md AGENTS.md; do
-  for p in $(grep -oE '(cmd|internal|chart|scripts|\.claude|\.github)/[A-Za-z0-9._/-]*[A-Za-z0-9_]' "$doc" | sort -u); do
+for doc in AGENTS.md; do
+  [ -f "$doc" ] || continue
+  for p in $(grep -oE '(cmd|internal|chart|scripts|\.agents|\.claude|\.github)/[A-Za-z0-9._/-]*[A-Za-z0-9_]' "$doc" | sort -u); do
     case "$p" in chart/charts*|dist*) continue ;; esac
     [ -e "$p" ] || { drift "$doc references missing path $p"; n=1; }
   done
 done
-[ "$n" = 0 ] && ok "paths referenced in CLAUDE.md / AGENTS.md exist"
+[ "$n" = 0 ] && ok "paths referenced in AGENTS.md exist"
 
 # 5. Skill registry: directory name == frontmatter name, and every skill is
-#    listed in CLAUDE.md "Quality tooling" and AGENTS.md "Agent Skills".
+#    listed in AGENTS.md "Agent Skills".
 n=0
-for d in .claude/skills/*/; do
+for d in .agents/skills/*/; do
   s=$(basename "$d")
   [ -f "$d/SKILL.md" ] || { drift "$d has no SKILL.md"; n=1; continue; }
   name=$(sed -nE '2,5s/^name:[[:space:]]*//p' "$d/SKILL.md" | head -1)
   [ "$name" = "$s" ] || { drift "$d/SKILL.md frontmatter name '$name' != directory '$s'"; n=1; }
-  grep -qF "\`$s\`" CLAUDE.md || { drift "skill '$s' not listed in CLAUDE.md > Quality tooling"; n=1; }
   grep -qF "\`$s\`" AGENTS.md || { drift "skill '$s' not listed in AGENTS.md > Agent Skills"; n=1; }
 done
-[ "$n" = 0 ] && ok "skills registry consistent ($(ls -d .claude/skills/*/ | wc -l) skills)"
+[ "$n" = 0 ] && ok "skills registry consistent ($(ls -d .agents/skills/*/ | wc -l) skills)"
 
 # 6. Go test names cited by skills / agents / docs still exist (prefix match,
 #    as `go test -run` does).
 tests=$(grep -rhoE '^func (Test[A-Za-z0-9_]+)' --include='*_test.go' . | sed 's/^func //' | sort -u)
 n=0
-for t in $(grep -rhoE '\bTest[A-Z][A-Za-z0-9_]*' .claude CLAUDE.md AGENTS.md | sort -u); do
-  grep -q "^$t" <<<"$tests" || { drift "test '$t' cited in .claude/ or docs matches no Go test"; n=1; }
+for t in $(grep -rhoE '\bTest[A-Z][A-Za-z0-9_]*' .agents AGENTS.md | sort -u); do
+  grep -q "^$t" <<<"$tests" || { drift "test '$t' cited in .agents/ or docs matches no Go test"; n=1; }
 done
 [ "$n" = 0 ] && ok "Go test names cited in skills/docs exist"
 

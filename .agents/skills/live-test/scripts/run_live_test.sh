@@ -141,7 +141,7 @@ echo ""
 echo "[5/5] MQTT round-trip against ${MQTT_HOST}..."
 LT_PREFIX="tibber-livetest/pulse"
 LT_DISCOVERY="tibber-livetest/homeassistant"
-# Skipping is explicit: CLAUDE.md's verification protocol requires the MQTT
+# Skipping is explicit: AGENTS.md's verification protocol requires the MQTT
 # round-trip, so an unavailable broker fails the run unless the operator opts
 # out with LIVE_TEST_SKIP_MQTT=1 (and then must not tick the $live-test gate).
 MQTT_SKIPPED=""

@@ -46,7 +46,7 @@ Fix the text. If the finding is already pushed, editing the PR description or
 adding a follow-up commit does **not** remove it: say so, and let the user
 decide whether to rewrite history on their own branch. Never rewrite a branch
 you do not own. If it is a real credential, it must be rotated regardless
-(CLAUDE.md > Security).
+(AGENTS.md > Security).
 
 ## 4. Record the gate
 

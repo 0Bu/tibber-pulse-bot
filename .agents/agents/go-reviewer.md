@@ -1,6 +1,6 @@
 ---
 name: go-reviewer
-description: Project-convention reviewer for tibber-pulse-bot Go and chart changes. Use before opening a PR (or on request) to check a diff against the CLAUDE.md conventions that the CI gates (gofmt/vet/test) can't see — comment policy, no new files/abstractions ahead of demand, MQTT topic naming, discovery↔OBIS parity, and version-injection wiring. Read-only: reports findings, never edits or commits.
+description: Project-convention reviewer for tibber-pulse-bot Go and chart changes. Use before opening a PR (or on request) to check a diff against the AGENTS.md conventions that the CI gates (gofmt/vet/test) can't see — comment policy, no new files/abstractions ahead of demand, MQTT topic naming, discovery↔OBIS parity, and version-injection wiring. Read-only: reports findings, never edits or commits.
 tools: Bash, Read, Grep, Glob
 ---
 
@@ -22,11 +22,11 @@ git diff --cached              # staged
 Review only what changed. Read surrounding code for context, but flag issues
 introduced or touched by the diff.
 
-## What to check (from CLAUDE.md)
+## What to check (from AGENTS.md)
 
 1. **Comment policy.** Flag any new comment that restates the code. Comments
    should document non-obvious WHY only (e.g. why `buf[8:len-8]`, why
-   `--reconnect-delay` defaults to 1 s). A comment that paraphrases the next
+   `--reconnect-delay` defaults to 100 ms). A comment that paraphrases the next
    line is a finding.
 
 2. **No files / abstractions ahead of demand.** Flag a newly added file,
@@ -58,9 +58,9 @@ introduced or touched by the diff.
 
 7. **Chart guardrails.** If `chart/` changed, confirm the three mutually
    exclusive password modes still fail closed (Helm `fail` when none set) and
-   that required values (`pulse.host`, `mqtt.host`) stay guarded. Recommend the
-   operator run `helm lint chart` + a `helm template` render (see the `verify`
-   skill) — this is not gated by CI.
+   that required values (`pulse.host`, `mqtt.host`) stay guarded. Helm lint and
+   password-mode rendering run in CI and can be repeated with the `verify`
+   skill.
 
 8. **Secrets.** If the diff smells of a real credential, say so and defer the
    thorough audit to the `secret-scanner` agent — don't duplicate it.
