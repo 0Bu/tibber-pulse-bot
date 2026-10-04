@@ -68,7 +68,7 @@ This document defines architecture, protocols, coding invariants, verification p
 
 ### Acquisition Modes
 
-- **`push` (default)**: Lower latency, no polling load on the bridge. Reconnect delay default 100 ms. Falls back to poll automatically if `/ws` fails.
+- **`push` (default)**: Lower latency, no polling load on the bridge. Reconnect delay default 100 ms. Falls back to poll on HTTP 404 or missing WS frames while HTTP polling works; HTTP 401 stops acquisition.
 - **`poll`**: Polling interval default 10 s.
 
 ### Stdout & Logging Conventions
@@ -231,14 +231,19 @@ This repository uses an open, vendor-independent agent setup adhering to univers
 
 ### Safety Gates & Hook Architecture (`scripts/`)
 
-- `scripts/install-hooks.sh`: Installs git safety hooks (`pre-push`, `pre-commit`, `pre-merge-commit`) respecting `core.hooksPath`.
-- `scripts/pre-push-secret-gate.sh`: Blocks push if `.env` is tracked, passwords are committed, or hygiene checks fail.
-- `scripts/pre-merge-review-gate.sh`: Enforces review gate approval before merging PRs or merging locally into `main`.
+- `scripts/install-hooks.sh`: Installs git safety hooks (`pre-push`, `pre-commit`, `pre-merge-commit`) respecting `core.hooksPath` and chaining existing executable hooks with the same arguments and pre-push input.
+- `scripts/pre-push-secret-gate.sh`: Checks the actual pushed refs and every outgoing commit, including root and merge commits. Blocks `.env`/`.env.*` (except `.env.example`), key files, credential assignments and hygiene findings. `--scan` also checks staged, working and non-ignored untracked changes. Unavailable objects fail closed; fetch the remote before retrying.
+- `scripts/pre-merge-review-gate.sh`: Checks live PR metadata and review stamps, including the current connector argument schema. Local approval requires `--approve-local <incoming-commit>`; the marker must match that incoming commit. Native hooks also check commits made after `git merge --no-commit`.
+- `scripts/hook-command.sh`: Shared shell-command tokenizer for the agent push and merge gates; preserves quoted paths and checks each command in a chain without evaluating shell input.
 - `scripts/check-pr-gates.sh`: Pure data policy verifying that all required review gates are stamped with the PR head SHA.
 - `scripts/check-pr-hygiene.sh`: Per-commit patch and message scanner for credentials, tokens, and non-English prose.
 - `scripts/check-drift.sh`: Static documentation drift gate for CLI flags, image tags, chart values, and skills.
 - `scripts/selftest-policy.sh`: Policy selftest proving that gates reliably fail when violated.
-- `scripts/stop-verify.sh`: Pre-turn completion verification hook.
+- `scripts/stop-verify.sh`: Pre-turn completion verification hook running applicable Go checks, documentation drift and policy selftests.
+
+Run `scripts/install-hooks.sh` once per clone to activate the native Git hooks. The optional `.claude/settings.json` adapter calls these same scripts before shell pushes and merges, before connector PR merges/auto-merges, and at turn completion; shared safety logic stays in `scripts/`. Other agents must invoke the scripts through their own tool hooks or follow the verification protocol explicitly.
+
+Git does not run `pre-merge-commit` for fast-forward or squash merges. Those paths require the agent pre-tool merge gate or the protected-branch PR policy. Native Git hooks cover merge commits and pushes; they do not intercept GitHub API calls.
 
 ### Merge gates
 

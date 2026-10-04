@@ -6,10 +6,10 @@
 #   3. pre-merge-commit: ensures review gate approval before local merge
 #
 # Respects core.hooksPath if configured, falling back to $(git rev-parse --git-path hooks)
-# or .git/hooks. Backs up existing non-matching hooks rather than clobbering them.
+# or .git/hooks. Existing executable hooks remain part of the hook chain.
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 2
 cd "$REPO_ROOT"
 
 # Determine effective git hooks directory:
@@ -36,19 +36,44 @@ install_hook() {
   local hook_file="$2"
   local extra_args="${3:-}"
   local target="$HOOKS_DIR/$hook_name"
+  local backup=""
 
-  if [ -f "$target" ] && ! grep -q "$hook_file" "$target" 2>/dev/null; then
-    local backup="${target}.backup.$(date +%s)"
+  if [ -f "$target" ] && grep -qxF '# tibber-pulse-bot safety hook v2' "$target"; then
+    echo "Already installed: $hook_name"
+    return
+  fi
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    backup=$(mktemp "${target}.backup.XXXXXX")
     echo "Backing up existing $hook_name hook to $backup"
     mv "$target" "$backup"
   fi
 
   cat > "$target" <<EOF
 #!/usr/bin/env bash
-# Auto-installed by scripts/install-hooks.sh
+# tibber-pulse-bot safety hook v2
 REPO_ROOT="\$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-exec "\$REPO_ROOT/$hook_file" $extra_args "\$@"
 EOF
+  printf 'previous_hook=%q\n' "$backup" >> "$target"
+  if [ "$hook_name" = pre-push ]; then
+    # Both hooks need the complete ref list; the first consumer must not
+    # exhaust stdin and silently disable the other hook's checks.
+    cat >> "$target" <<'EOF'
+input=$(mktemp) || exit 2
+trap 'rm -f "$input"' EXIT
+cat > "$input" || exit 2
+"$REPO_ROOT/scripts/pre-push-secret-gate.sh" "$@" < "$input" || exit $?
+if [ -n "$previous_hook" ] && [ -x "$previous_hook" ]; then
+  "$previous_hook" "$@" < "$input" || exit $?
+fi
+EOF
+  else
+    printf '"$REPO_ROOT/%s" %s "$@" || exit $?\n' "$hook_file" "$extra_args" >> "$target"
+    cat >> "$target" <<'EOF'
+if [ -n "$previous_hook" ] && [ -x "$previous_hook" ]; then
+  exec "$previous_hook" "$@"
+fi
+EOF
+  fi
   chmod +x "$target"
   echo "✓ Installed $hook_name -> $hook_file $extra_args"
 }

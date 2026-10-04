@@ -1,236 +1,201 @@
 #!/usr/bin/env bash
-# Pre-push and secret safety gate for tibber-pulse-bot.
-# Hardens AGENTS.md > Security ("Never commit the bridge password").
-#
-# Runs in three modes:
-#   1. Git pre-push hook: receives `<local-ref> <local-sha> <remote-ref> <remote-sha>` on stdin.
-#      Scans every outgoing commit and ref individually (catches secrets added and deleted in later commits).
-#   2. Git pre-commit hook: `pre-push-secret-gate.sh --pre-commit` (checks staged files and diffs).
-#   3. Manual scan or Agent PreToolUse hook: `pre-push-secret-gate.sh [--scan]`
-#
-# Fails CLOSED (exit 2, blocks the push/commit) on:
-#   1. A real `.env` or `.env.*` file tracked in any outgoing ref or commit (.env.example is allowed).
-#   2. Outgoing commits adding a real TIBBER_PULSE_PASSWORD / mqtt password value.
-#   3. scripts/check-pr-hygiene.sh reporting personal data, leaked tokens, or German prose.
-set -u
+# Git supplies the actual pushed objects; the checked-out index may belong
+# to an unrelated branch. Every outgoing commit must pass, including roots
+# and changes introduced while resolving a merge.
+set -uo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-cd "$REPO_ROOT" 2>/dev/null || exit 0
-command -v git >/dev/null 2>&1 || exit 0
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 2
+cd "$REPO_ROOT" || exit 2
+tmp=$(mktemp -d) || exit 2
+trap 'rm -rf "$tmp"' EXIT
 
 fail() {
   echo "BLOCKED (secret gate): $1" >&2
-  echo "See AGENTS.md > Security. Run the secret-scanner agent for a full audit;" >&2
-  echo "if the value is real, scrub it (and rotate the bridge password) before pushing." >&2
+  echo "See AGENTS.md > Security; remove sensitive material from outgoing commits before pushing." >&2
   exit 2
 }
 
-has_git_subcommand() {
-  local target="$1"
-  local full_cmd="$2"
-  local segments
-  segments=$(printf '%s\n' "$full_cmd" | sed -E 's/[;&|]+/\n/g')
-  while IFS= read -r seg; do
-    [ -z "$seg" ] && continue
-    local in_git=0
-    local prev_opt=""
-    for token in $seg; do
-      if [ "$in_git" -eq 0 ]; then
-        if [ "$token" = "git" ] || [[ "$token" == */git ]]; then
-          in_git=1
-          prev_opt=""
-        fi
-        continue
-      fi
-      if [ "$prev_opt" = "-C" ] || [ "$prev_opt" = "-c" ] || [ "$prev_opt" = "--git-dir" ] || [ "$prev_opt" = "--work-tree" ]; then
-        prev_opt=""
-        continue
-      fi
-      if [[ "$token" == -* ]]; then
-        if [ "$token" = "-C" ] || [ "$token" = "-c" ] || [ "$token" = "--git-dir" ] || [ "$token" = "--work-tree" ]; then
-          prev_opt="$token"
-        fi
-        continue
-      fi
-      if [ "$token" = "$target" ]; then
-        return 0
-      else
-        break
-      fi
-    done
-  done <<<"$segments"
-  return 1
-}
-
-is_git_push_cmd() {
-  has_git_subcommand "push" "$1"
-}
-
-# Mode 2: Git pre-commit hook
-if [ "${1:-}" = "--pre-commit" ]; then
-  # Check staged file names
-  staged_files=$(git diff --cached --name-only 2>/dev/null || true)
-  while IFS= read -r f; do
-    [ -z "$f" ] && continue
-    case "$(basename "$f")" in
-      .env.example|.env.sample) ;;
-      .env|.env.*)
-        fail "Cannot stage/commit $f. Only .env.example may be tracked."
-        ;;
+check_paths() {
+  local path
+  while IFS= read -r -d '' path; do
+    case "${path##*/}" in
+      .env.example) ;;
+      .env|.env.*) fail "forbidden env file: $path" ;;
+      *.pem|*.key) fail "key file requires removal: $path" ;;
     esac
-  done <<<"$staged_files"
+  done < "$1"
+}
 
-  # Check staged diff additions
-  added=$(git diff --cached 2>/dev/null | grep -E '^\+' || true)
-  hits=$(printf '%s\n' "$added" \
-    | grep -iE '^\+[[:space:]]*(export[[:space:]]+)?(TIBBER_PULSE_PASSWORD|MQTT_PASSWORD|pulse[._]?password)[[:space:]]*[:=]' \
-    | grep -vE '\$\{|\*|<[^>]*>|changeme|change-me|example|dummy|placeholder|your[-_]|replace|xxxx|=[[:space:]]*("")?[[:space:]]*$' \
-    || true)
-  if [ -n "$hits" ]; then
-    fail "Staged changes add a real password value:"$'\n'"$hits"
+check_content() {
+  local added="$1" assignment='^\+[[:space:]]*(export[[:space:]]+)?(TIBBER_PULSE_PASSWORD|MQTT_PASSWORD|pulse[._]?password|password)[[:space:]]*[:=][[:space:]]*'
+  if grep -qE '^\+[[:space:]]*-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----' "$added"; then
+    fail "private key block detected (content redacted)"
+  fi
+  if grep -iE "$assignment" "$added" \
+    | grep -viE "${assignment}$" \
+    | grep -viE "${assignment}((\"\"|''|null|~)|[\"']?(changeme|change-me|example|dummy|dummy1234|dummy-9char|placeholder|your[-_]password|replace[-_]me|xxxx(-xxxx)?|<[^>]*>)[\"']?)[[:space:]]*(#.*)?$" \
+    | grep -viE "${assignment}"'"?(\$\{.*\}|\$\(.*\)|\$[A-Za-z_][A-Za-z0-9_]*)"?[[:space:]]*(#.*)?$' \
+    > "$tmp/password-hits"; then
+    fail "credential assignment detected (values redacted)"
+  fi
+}
+
+check_tree() {
+  git ls-tree -r -z --name-only "$1" > "$tmp/paths" || fail "cannot inspect tree $1"
+  check_paths "$tmp/paths"
+}
+
+check_commit() {
+  check_tree "$1"
+  git diff-tree --root -m --no-renames -p "$1" > "$tmp/patch" || fail "cannot inspect commit $1"
+  check_content "$tmp/patch"
+}
+
+check_hygiene() {
+  local result rc
+  result=$("$SCRIPT_DIR/check-pr-hygiene.sh" --text "$tmp/text" --diff "$tmp/diff" 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$result" | grep '^FINDING' >&2 || true
+    fail "PR hygiene check failed (exit $rc)"
+  fi
+}
+
+scan_commits() {
+  local commit
+  git rev-list "$@" > "$tmp/commits" || fail "cannot enumerate outgoing commits; fetch the remote before retrying"
+  : > "$tmp/text"
+  : > "$tmp/diff"
+  while IFS= read -r commit; do
+    check_commit "$commit"
+    git show -s --format='%B' "$commit" >> "$tmp/text" || fail "cannot inspect commit message $commit"
+    # diff-tree -m compares a merge against every parent; git log -p omits
+    # merge resolutions by default and would miss newly introduced secrets.
+    sed -n '/^+[^+]/s/^+//p' "$tmp/patch" >> "$tmp/diff"
+  done < "$tmp/commits"
+  check_hygiene
+}
+
+scan_changes() {
+  local path rc
+  git diff --cached --name-only -z --diff-filter=ACMT > "$tmp/paths" || fail "cannot inspect staged paths"
+  check_paths "$tmp/paths"
+  git diff --cached --no-renames > "$tmp/patch" || fail "cannot inspect staged changes"
+  check_content "$tmp/patch"
+  if [ "${1:-}" != "--pre-commit" ]; then
+    git ls-files -z > "$tmp/paths" || fail "cannot inspect tracked paths"
+    check_paths "$tmp/paths"
+    git diff --no-renames > "$tmp/unstaged" || fail "cannot inspect working changes"
+    cat "$tmp/unstaged" >> "$tmp/patch"
+    git ls-files --others --exclude-standard -z > "$tmp/paths" || fail "cannot inspect untracked paths"
+    check_paths "$tmp/paths"
+    while IFS= read -r -d '' path; do
+      git diff --no-index -- /dev/null "$path" > "$tmp/untracked"
+      rc=$?
+      [ "$rc" -le 1 ] || fail "cannot inspect untracked file"
+      cat "$tmp/untracked" >> "$tmp/patch"
+    done < "$tmp/paths"
+    check_content "$tmp/patch"
+  fi
+  : > "$tmp/text"
+  sed -n '/^+[^+]/s/^+//p' "$tmp/patch" > "$tmp/diff"
+  check_hygiene
+}
+
+scan_ref() {
+  local commit base
+  commit=$(git rev-parse --verify --end-of-options "$1^{commit}" 2>/dev/null) || fail "cannot resolve pushed source ref"
+  check_tree "$commit"
+  base=$(git merge-base "$commit" origin/main 2>/dev/null || true)
+  if [ -n "$base" ]; then scan_commits "$base..$commit"; else scan_commits "$commit"; fi
+}
+
+if [ "${1:-}" = --scan-ref ]; then
+  [ "$#" -eq 2 ] || fail "missing pushed source ref"
+  scan_ref "$2"
+  exit 0
+fi
+
+if [ "${1:-}" = "--pre-commit" ]; then
+  scan_changes --pre-commit
+  if git rev-parse --verify MERGE_HEAD >/dev/null 2>&1; then
+    "$SCRIPT_DIR/pre-merge-review-gate.sh" --git-merge || exit 2
   fi
   exit 0
 fi
 
-# Check individual commit for secrets and forbidden file paths (F01, F05)
-check_single_commit() {
-  local commit="$1"
-  local ref_name="${2:-HEAD}"
-
-  # 1. Check touched file names in this specific commit
-  local files
-  files=$(git diff-tree --no-commit-id --name-only -r "$commit" 2>/dev/null || true)
-  while IFS= read -r f; do
-    [ -z "$f" ] && continue
-    case "$(basename "$f")" in
-      .env.example|.env.sample) ;;
-      .env|.env.*)
-        fail "Commit $commit in $ref_name touches forbidden env file '$f'. Secrets must not be committed even if removed in subsequent commits."
-        ;;
-    esac
-  done <<<"$files"
-
-  # 2. Check lines added in this specific commit
-  local added hits
-  added=$(git diff-tree -p "$commit" 2>/dev/null | grep -E '^\+' || true)
-  hits=$(printf '%s\n' "$added" \
-    | grep -iE '^\+[[:space:]]*(export[[:space:]]+)?(TIBBER_PULSE_PASSWORD|MQTT_PASSWORD|pulse[._]?password)[[:space:]]*[:=]' \
-    | grep -vE '\$\{|\*|<[^>]*>|changeme|change-me|example|dummy|placeholder|your[-_]|replace|xxxx|=[[:space:]]*("")?[[:space:]]*$' \
-    || true)
-  if [ -n "$hits" ]; then
-    fail "Commit $commit in $ref_name adds a real password value:"$'\n'"$hits"
-  fi
-}
-
-# Mode 1: Check if input comes from stdin
-stdin_content=""
+input=""
 if [ "${1:-}" != "--scan" ] && [ ! -t 0 ]; then
-  stdin_content=$(cat)
+  input=$(cat) || fail "cannot read hook input"
 fi
 
-# Check if stdin is agent tool call JSON
-if [ -n "$stdin_content" ] && printf '%s' "$stdin_content" | jq -e '(.tool_name // .ToolName // .name // .tool_input // .arguments // .Arguments // .command // .CommandLine)' >/dev/null 2>&1; then
-  cmd=$(printf '%s' "$stdin_content" | jq -r '(.tool_input.command // .tool_input.CommandLine // .tool_input.cmd // .arguments.command // .arguments.CommandLine // .arguments.cmd // .Arguments.command // .Arguments.CommandLine // .Arguments.cmd // .command // .CommandLine // empty)' 2>/dev/null)
-  if ! is_git_push_cmd "$cmd"; then
-    # Not a git push command, pass through
-    exit 0
-  fi
-  # If it is a git push command, proceed to scan working tree & outgoing commits
-  stdin_content=""
-fi
-
-# If stdin has git pre-push format: `<local-ref> <local-sha> <remote-ref> <remote-sha>`
-if [ -n "$stdin_content" ] && grep -qE '^[^[:space:]]+ [0-9a-f]{40} [^[:space:]]+ [0-9a-f]{40}' <<<"$stdin_content"; then
-  while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
-    [ -z "$local_sha" ] && continue
-    # Branch deletion
-    if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
-      continue
-    fi
-
-    # Check files tracked in pushed tree (F05)
-    tree_files=$(git ls-tree -r --name-only "$local_sha" 2>/dev/null || true)
-    while IFS= read -r f; do
-      [ -z "$f" ] && continue
-      case "$(basename "$f")" in
-        .env.example|.env.sample) ;;
-        .env|.env.*)
-          fail "Pushed ref $local_ref contains tracked env file '$f'. Only .env.example may be tracked."
-          ;;
-      esac
-    done <<<"$tree_files"
-
-    # Determine outgoing commit range
-    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
-      base=$(git merge-base "$local_sha" origin/main 2>/dev/null || true)
-      if [ -n "$base" ]; then
-        range="$base..$local_sha"
+if [ -n "$input" ] && jq -e 'type == "object"' >/dev/null 2>&1 <<< "$input"; then
+  cmd=$(jq -r '(.tool_input.command // .tool_input.CommandLine // .tool_input.cmd // .arguments.command // .arguments.CommandLine // .arguments.cmd // .Arguments.command // .Arguments.CommandLine // .Arguments.cmd // .command // .CommandLine // empty)' <<< "$input")
+  # Both adapters must handle quoting and compound commands identically;
+  # hook-command.sh tokenizes the input without evaluating any shell code.
+  source "$SCRIPT_DIR/hook-command.sh"
+  scan_push_command() {
+    if hook_git_command "$@" && [ "$HOOK_SUBCOMMAND" = push ]; then
+      local root token ref skip=0 destination=0 deleting=0 i refs=() list=""
+      root=$(git "${HOOK_GIT_OPTIONS[@]}" rev-parse --show-toplevel 2>/dev/null) || fail "cannot resolve push repository"
+      for ((i=0; i<${#HOOK_ARGS[@]}; i++)); do
+        token="${HOOK_ARGS[i]}"
+        if [ "$skip" -eq 1 ]; then skip=0; continue; fi
+        case "$token" in
+          -o|--push-option|--receive-pack|--exec) skip=1 ;;
+          --repo) destination=1; skip=1 ;;
+          --repo=*) destination=1 ;;
+          --delete|-d) deleting=1 ;;
+          --all|--branches) list=refs/heads ;;
+          --tags) list="${list:+$list }refs/tags" ;;
+          --mirror) list=refs ;;
+          -*) ;;
+          *)
+            if [ "$destination" -eq 0 ]; then destination=1; continue; fi
+            ref="${token#+}"; ref="${ref%%:*}"
+            [ -z "$ref" ] || refs+=("$ref") ;;
+        esac
+      done
+      [ "$deleting" -eq 0 ] || return 0
+      if [ -n "$list" ]; then
+        git -C "$root" for-each-ref --format='%(refname)' $list > "$tmp/push-refs" || fail "cannot enumerate pushed refs"
+        while IFS= read -r ref; do refs+=("$ref"); done < "$tmp/push-refs"
+      fi
+      if [ "${#refs[@]}" -eq 0 ]; then
+        (cd "$root" && "$SCRIPT_DIR/pre-push-secret-gate.sh" --scan) || exit 2
       else
-        range="$local_sha"
+        for ref in "${refs[@]}"; do
+          (cd "$root" && "$SCRIPT_DIR/pre-push-secret-gate.sh" --scan-ref "$ref") || exit 2
+        done
+      fi
+    fi
+  }
+  hook_each_command "$cmd" scan_push_command || fail "cannot parse shell hook command"
+  exit 0
+fi
+
+if [ -n "$input" ] || [ "$#" -ge 2 ]; then
+  while read -r local_ref local_sha remote_ref remote_sha extra; do
+    [ -n "$local_ref" ] || continue
+    [[ "$local_sha" =~ ^[0-9a-f]{40}$ && "$remote_sha" =~ ^[0-9a-f]{40}$ ]] && [ -n "$remote_ref" ] && [ -z "$extra" ] || fail "malformed pre-push input"
+    [ "$local_sha" != 0000000000000000000000000000000000000000 ] || continue
+    local_commit=$(git rev-parse --verify "$local_sha^{commit}" 2>/dev/null) || fail "pushed ref is not an available commit: $local_ref"
+    check_tree "$local_commit"
+    if [ "$remote_sha" = 0000000000000000000000000000000000000000 ]; then
+      if [ "$#" -ge 2 ] && [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        scan_commits "$local_commit" --not "--remotes=$1"
+      else
+        scan_commits "$local_commit"
       fi
     else
-      range="$remote_sha..$local_sha"
+      remote_commit=$(git rev-parse --verify "$remote_sha^{commit}" 2>/dev/null) || fail "remote commit is unavailable; fetch the remote before retrying"
+      scan_commits "$remote_commit..$local_commit"
     fi
-
-    # Inspect each outgoing commit individually (F01)
-    commits=$(git rev-list "$range" 2>/dev/null || true)
-    for c in $commits; do
-      check_single_commit "$c" "$local_ref"
-    done
-
-    # Run check-pr-hygiene on actual pushed commits (F01, F05)
-    if [ -x scripts/check-pr-hygiene.sh ]; then
-      tmp_hyg=$(mktemp -d)
-      git log --format='%B' "$range" > "$tmp_hyg/text" 2>/dev/null || true
-      git log --format= -p "$range" 2>/dev/null | grep -E '^\+([^+]|$)' | cut -c2- > "$tmp_hyg/diff" || true
-      hyg_out=$(scripts/check-pr-hygiene.sh --text "$tmp_hyg/text" --diff "$tmp_hyg/diff" 2>&1)
-      hyg_rc=$?
-      rm -rf "$tmp_hyg"
-      if [ "$hyg_rc" -ne 0 ]; then
-        fail "PR hygiene check failed for pushed ref $local_ref:"$'\n'"$hyg_out"
-      fi
-    fi
-  done <<<"$stdin_content"
-
+  done <<< "$input"
   exit 0
 fi
 
-# Mode 3: Manual scan or fallback check (current HEAD against origin/main)
-# 1. Check working directory / index for tracked .env files
-tracked_env=$(git ls-files 2>/dev/null | grep -E '^(\.env|\.env\..*)$' | grep -vE '^(\.env\.example|\.env\.sample)$' || true)
-if [ -n "$tracked_env" ]; then
-  fail "Tracked env file detected: $tracked_env. Untrack it (git rm --cached $tracked_env)."
-fi
-
-# 2. Check each outgoing commit individually (F01)
-base=$(git merge-base HEAD origin/main 2>/dev/null || true)
-if [ -n "$base" ]; then
-  commits=$(git rev-list "$base..HEAD" 2>/dev/null || true)
-else
-  commits=$(git rev-list HEAD 2>/dev/null || true)
-fi
-for c in $commits; do
-  check_single_commit "$c" "HEAD"
-done
-
-# 3. Run check-pr-hygiene
-if [ -x scripts/check-pr-hygiene.sh ]; then
-  if [ -n "$base" ]; then
-    hyg_out=$(scripts/check-pr-hygiene.sh 2>&1)
-  else
-    tmp_hyg=$(mktemp -d)
-    git log --format='%B' HEAD > "$tmp_hyg/text" 2>/dev/null || true
-    git log --format= -p HEAD 2>/dev/null | grep -E '^\+([^+]|$)' | cut -c2- > "$tmp_hyg/diff" || true
-    hyg_out=$(scripts/check-pr-hygiene.sh --text "$tmp_hyg/text" --diff "$tmp_hyg/diff" 2>&1)
-    rm -rf "$tmp_hyg"
-  fi
-  hyg_rc=$?
-  if [ "$hyg_rc" -ne 0 ]; then
-    fail "PR hygiene check failed:"$'\n'"$hyg_out"
-  fi
-fi
-
-if [ "${1:-}" = "--scan" ]; then
-  echo "pre-push-secret-gate: scan clean."
-fi
-exit 0
+scan_changes
+scan_ref HEAD
+echo "pre-push-secret-gate: scan clean."

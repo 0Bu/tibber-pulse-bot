@@ -6,8 +6,8 @@
 #
 # A later push changes the head and re-stales every stamp, forcing a fresh
 # review. Pure data check (no PR code is executed), so the trusted-base
-# pr-policy workflow can run it on pull_request_target, and the Claude
-# pre-merge hook runs the same script.
+# pr-policy workflow can run it on pull_request_target, and agent adapters
+# invoke the same vendor-independent pre-merge gate.
 #
 # Usage: check-pr-gates.sh --body-file F --head-sha SHA --files-file F
 #                          [--meta-file pr.json --commits-file commits.json]

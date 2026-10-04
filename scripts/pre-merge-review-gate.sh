@@ -1,286 +1,191 @@
 #!/usr/bin/env bash
-# Pre-merge review gate: ensures all required reviews are recorded before merging.
-#
-# Supports:
-#   1. Agent tool hook (JSON on stdin):
-#      - GitHub MCP merge tools (merge_pull_request, enable_pr_auto_merge, codex_apps, etc.)
-#        -> Fetches PR from GitHub API and validates with scripts/check-pr-gates.sh
-#      - Shell merge commands (gh pr merge, git merge)
-#   2. Git pre-merge-commit hook (`scripts/pre-merge-review-gate.sh --git-merge`):
-#      - Blocks local git merge into main unless explicitly approved for the merged commit SHA
-#   3. CLI invocation:
-#      - `scripts/pre-merge-review-gate.sh --pr <number> [--repo owner/repo]`
-#      - `scripts/pre-merge-review-gate.sh --approve-local <commit-sha>`
-#
-# Fails CLOSED (exit 2) when requirements are not met.
+# Remote approvals belong to the live PR head; local approvals belong to the
+# incoming commit, never merely to the branch that happens to be checked out.
 set -uo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-cd "$REPO_ROOT" 2>/dev/null || exit 0
-
-MARKER="${REPO_ROOT}/.agents/.review-marker"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 2
+cd "$REPO_ROOT" || exit 2
+source "$SCRIPT_DIR/hook-command.sh"
+tmp=$(mktemp -d) || exit 2
+trap 'rm -rf "$tmp"' EXIT
 
 block() {
   echo "BLOCKED (pre-merge review gate): $1" >&2
-  echo "Run the missing reviews on the PR head (/code-review, project-audit," >&2
-  echo "pr-hygiene-review, plus chart-lint / ha-discovery-validate / live-test when" >&2
-  echo "the diff needs them), tick each in the PR body's 'Merge gates' section with" >&2
-  echo "a bare '@ <head-sha>' stamp, then retry. See AGENTS.md > Merge gates." >&2
+  echo "Run the required reviews and record their current PR-head stamps; see AGENTS.md > Merge gates." >&2
   exit 2
 }
 
-has_git_subcommand() {
-  local target="$1"
-  local full_cmd="$2"
-  local segments
-  segments=$(printf '%s\n' "$full_cmd" | sed -E 's/[;&|]+/\n/g')
-  while IFS= read -r seg; do
-    [ -z "$seg" ] && continue
-    local in_git=0
-    local prev_opt=""
-    for token in $seg; do
-      if [ "$in_git" -eq 0 ]; then
-        if [ "$token" = "git" ] || [[ "$token" == */git ]]; then
-          in_git=1
-          prev_opt=""
-        fi
-        continue
-      fi
-      if [ "$prev_opt" = "-C" ] || [ "$prev_opt" = "-c" ] || [ "$prev_opt" = "--git-dir" ] || [ "$prev_opt" = "--work-tree" ]; then
-        prev_opt=""
-        continue
-      fi
-      if [[ "$token" == -* ]]; then
-        if [ "$token" = "-C" ] || [ "$token" = "-c" ] || [ "$token" = "--git-dir" ] || [ "$token" = "--work-tree" ]; then
-          prev_opt="$token"
-        fi
-        continue
-      fi
-      if [ "$token" = "$target" ]; then
-        return 0
-      else
-        break
+check_local_target() {
+  local root="$1" target="$2" sha recorded=""
+  sha=$(git -C "$root" rev-parse --verify --end-of-options "$target^{commit}" 2>/dev/null) || block "cannot resolve incoming merge commit"
+  [ -f "$root/.agents/.review-marker" ] && recorded=$(cat "$root/.agents/.review-marker")
+  [ "$sha" = "$recorded" ] || block "incoming commit $sha has no matching local review approval"
+}
+
+check_git_merge() {
+  local root="$1" current_branch path target variable count=0
+  current_branch=$(git -C "$root" symbolic-ref --short HEAD 2>/dev/null || true)
+  [ "$current_branch" = main ] || return 0
+  path=$(git -C "$root" rev-parse --git-path MERGE_HEAD) || block "cannot locate incoming merge state"
+  [[ "$path" = /* ]] || path="$root/$path"
+  if [ -s "$path" ]; then
+    while IFS= read -r target; do
+      count=$((count+1))
+      check_local_target "$root" "$target"
+    done < "$path"
+  else
+    # Git exports the resolved incoming objects as GITHEAD_<sha> before
+    # running pre-merge-commit, but writes MERGE_HEAD only if it stops.
+    for variable in $(compgen -e); do
+      if [[ "$variable" =~ ^GITHEAD_([0-9a-f]{40})$ ]]; then
+        target="${BASH_REMATCH[1]}"
+        count=$((count+1))
+        check_local_target "$root" "$target"
       fi
     done
-  done <<<"$segments"
-  return 1
-}
-
-is_git_merge_cmd() {
-  local cmd_str="$1"
-  # Ignore abort/quit/continue
-  if printf '%s\n' "$cmd_str" | grep -qE 'git[[:space:]]+.*merge[[:space:]]+--(abort|quit|continue)'; then
-    return 1
   fi
-  has_git_subcommand "merge" "$cmd_str"
+  [ "$count" -gt 0 ] || block "no incoming commit available for local merge validation"
+  [ "$count" -eq 1 ] || block "local approval supports one incoming commit at a time"
 }
 
-is_gh_pr_merge_cmd() {
-  local cmd_str="$1"
-  if printf '%s\n' "$cmd_str" | grep -E '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)' >/dev/null 2>&1; then
-    return 0
-  fi
-  return 1
-}
-
-extract_git_merge_target() {
-  local cmd_str="$1"
-  local target=""
-  local in_merge=0
-  local prev=""
-  for tok in $cmd_str; do
-    if [ "$in_merge" -eq 0 ]; then
-      if [ "$tok" = "merge" ]; then
-        in_merge=1
-        prev="merge"
-      fi
-      continue
-    fi
-    # If chained command begins, stop
-    case "$tok" in
-      \;|\&\&|\|\||\|) break ;;
-    esac
-    # Skip flag options with values
-    if [ "$prev" = "-m" ] || [ "$prev" = "-s" ] || [ "$prev" = "-X" ]; then
-      prev=""
-      continue
-    fi
-    if [[ "$tok" == -* ]]; then
-      prev="$tok"
-      continue
-    fi
-    target="$tok"
-    break
-  done
-  printf '%s' "$target"
+default_repo() {
+  if [ -n "${GH_REPO:-}" ]; then printf '%s' "$GH_REPO"; return; fi
+  local remote host
+  remote=$(git -C "${HOOK_CWD:-$REPO_ROOT}" remote get-url origin 2>/dev/null) || return 1
+  case "$remote" in
+    https://github.com/*) remote="${remote#https://github.com/}" ;;
+    git@*:*)
+      host="${remote#git@}"; host="${host%%:*}"
+      [ "$host" = github.com ] || return 1
+      remote="${remote#*:}" ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "${remote%.git}"
 }
 
 check_pr_via_api() {
-  local owner="$1" repo="$2" pr="$3"
-  if [[ "$repo" == *"/"* ]]; then
-    owner="${repo%%/*}"
-    repo="${repo##*/}"
-  fi
-  [ -n "$owner" ] && [ -n "$repo" ] && [ -n "$pr" ] || block "cannot determine owner, repo, or pull_number"
-
-  local tmp
-  tmp=$(mktemp -d); trap 'rm -rf "$tmp"' RETURN
-
+  local repository="$1" pr="$2" expected="${3:-}" token="${GH_TOKEN:-${GITHUB_TOKEN:-}}" head out
+  [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] && [[ "$pr" =~ ^[1-9][0-9]*$ ]] || block "cannot determine a valid repository and PR number"
+  if [ -z "$token" ] && command -v gh >/dev/null 2>&1; then token=$(gh auth token 2>/dev/null || true); fi
   api() {
-    local auth=()
-    local token="${GITHUB_TOKEN:-}"
-    if [ -z "$token" ] && command -v gh >/dev/null 2>&1; then
-      token=$(gh auth token 2>/dev/null || true)
-    fi
-    [ -n "$token" ] && auth=(-H "Authorization: Bearer $token")
-    curl -fsSL --max-time 20 "${auth[@]}" -H 'Accept: application/vnd.github+json' \
-      "https://api.github.com/repos/$owner/$repo/$1"
+    local auth=(-H 'Accept: application/vnd.github+json')
+    [ -z "$token" ] || auth+=(-H "Authorization: Bearer $token")
+    curl -fsSL --max-time 20 "${auth[@]}" \
+      "https://api.github.com/repos/$repository/$1"
   }
-
-  api "pulls/$pr" > "$tmp/pr.json" || block "cannot fetch PR #$pr from the GitHub API (repos/$owner/$repo/pulls/$pr)"
-  api "pulls/$pr/files?per_page=100" | jq -r '.[].filename' > "$tmp/files.txt" || block "cannot fetch PR #$pr files"
-  api "pulls/$pr/commits?per_page=100" > "$tmp/commits.json" || block "cannot fetch PR #$pr commits"
-
-  local expected_files
-  expected_files=$(jq -r '.changed_files // 0' "$tmp/pr.json")
-  if [ "$(wc -l < "$tmp/files.txt")" -lt "$expected_files" ]; then
-    block "PR #$pr changes more files ($expected_files) than one API page returned; verify in CI (pr-policy) instead"
-  fi
-
-  jq -r '.body // ""' "$tmp/pr.json" > "$tmp/body.md"
-  local head
-  head=$(jq -r '.head.sha // empty' "$tmp/pr.json")
-  [ -n "$head" ] || block "cannot resolve head SHA for PR #$pr"
-
-  local out rc
-  out=$(scripts/check-pr-gates.sh --body-file "$tmp/body.md" --head-sha "$head" \
-    --files-file "$tmp/files.txt" --meta-file "$tmp/pr.json" --commits-file "$tmp/commits.json" 2>&1)
-  rc=$?
-  [ "$rc" -eq 0 ] || block "PR #$pr is missing review records for head ${head:0:12}:"$'\n'"$out"
+  api "pulls/$pr" > "$tmp/pr.json" || block "cannot fetch PR #$pr"
+  api "pulls/$pr/files?per_page=100" | jq -er '.[].filename' > "$tmp/files" || block "cannot fetch changed files"
+  api "pulls/$pr/commits?per_page=100" > "$tmp/commits.json" || block "cannot fetch PR commits"
+  [ "$(wc -l < "$tmp/files" | tr -d '[:space:]')" = "$(jq -r '.changed_files' "$tmp/pr.json")" ] || block "incomplete PR file list; use the paginated CI gate"
+  [ "$(jq 'length' "$tmp/commits.json")" = "$(jq '.commits' "$tmp/pr.json")" ] || block "incomplete PR commit list; use the paginated CI gate"
+  head=$(jq -er '.head.sha' "$tmp/pr.json") || block "cannot resolve PR head"
+  [ -z "$expected" ] || [ "$expected" = "$head" ] || block "requested merge head differs from the live PR head"
+  jq -r '.body // ""' "$tmp/pr.json" > "$tmp/body" || block "cannot read PR body"
+  out=$("$SCRIPT_DIR/check-pr-gates.sh" --body-file "$tmp/body" --head-sha "$head" \
+    --files-file "$tmp/files" --meta-file "$tmp/pr.json" --commits-file "$tmp/commits.json" 2>&1) || block "$out"
   echo "OK: PR #$pr head ${head:0:12} has all required review gates recorded."
-  return 0
 }
 
-# CLI Mode: --approve-local <sha>
-if [ "${1:-}" = "--approve-local" ]; then
-  sha="${2:-$(git rev-parse HEAD 2>/dev/null || true)}"
-  [ -n "$sha" ] || { echo "pre-merge-review-gate: specify commit SHA to approve" >&2; exit 1; }
-  full_sha=$(git rev-parse "$sha" 2>/dev/null || echo "$sha")
-  mkdir -p "$(dirname "$MARKER")"
-  printf '%s\n' "$full_sha" > "$MARKER"
-  echo "Recorded review approval for commit $full_sha — local merge of this commit is now allowed."
-  exit 0
-fi
+case "${1:-}" in
+  --approve-local)
+    [ "$#" -eq 2 ] || block "specify the incoming commit to approve"
+    sha=$(git rev-parse --verify --end-of-options "$2^{commit}" 2>/dev/null) || block "approval target is not an available commit"
+    mkdir -p "$REPO_ROOT/.agents" || exit 2
+    printf '%s\n' "$sha" > "$REPO_ROOT/.agents/.review-marker" || exit 2
+    echo "Recorded local review approval for $sha."
+    exit 0 ;;
+  --git-merge) check_git_merge "$REPO_ROOT"; exit 0 ;;
+  --check) check_local_target "$REPO_ROOT" "${2:-HEAD}"; exit 0 ;;
+  --pr)
+    [ "$#" -ge 2 ] || block "missing PR number"
+    pr="$2"; shift 2
+    repository=$(default_repo || true); expected=""
+    while [ "$#" -gt 0 ]; do
+      [ "$#" -ge 2 ] || block "missing CLI option value"
+      case "$1" in
+        --repo) repository="$2" ;;
+        --expected-head) expected="$2" ;;
+        *) block "unknown CLI option" ;;
+      esac
+      shift 2
+    done
+    check_pr_via_api "$repository" "$pr" "$expected"
+    exit 0 ;;
+esac
 
-# CLI Mode: --pr <number> [--repo owner/repo]
-if [ "${1:-}" = "--pr" ]; then
-  pr="$2"
-  repo_arg="${4:-0Bu/tibber-pulse-bot}"
-  owner="${repo_arg%%/*}"
-  repo="${repo_arg##*/}"
-  check_pr_via_api "$owner" "$repo" "$pr"
-  exit 0
-fi
-
-# Mode: Git pre-merge-commit hook
-if [ "${1:-}" = "--git-merge" ]; then
-  current_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "HEAD")
-  if [ "$current_branch" = "main" ]; then
-    merge_head=$(git rev-parse MERGE_HEAD 2>/dev/null || true)
-    recorded_sha=""
-    [ -f "$MARKER" ] && recorded_sha=$(cat "$MARKER" 2>/dev/null | tr -d '[:space:]')
-    if [ -z "$recorded_sha" ]; then
-      block "Local git merge into main blocked without review approval.
-To approve local merge after code review (.agents/agents/go-reviewer.md) and project-audit:
-    bash scripts/pre-merge-review-gate.sh --approve-local <commit-sha>"
-    fi
-    if [ -n "$merge_head" ] && [ "$merge_head" != "$recorded_sha" ]; then
-      block "Local git merge into main blocked: merged commit $merge_head does not match approved commit $recorded_sha."
-    fi
-    echo "OK: Local merge of $recorded_sha into main is approved by marker."
+inspect_merge_command() {
+  local root token skip=0 targets=() operation="" selector="" repository="" expected="" i
+  if hook_git_command "$@" && [ "$HOOK_SUBCOMMAND" = merge ]; then
+    root=$(git "${HOOK_GIT_OPTIONS[@]}" rev-parse --show-toplevel 2>/dev/null) || block "cannot resolve merge repository"
+    for ((i=0; i<${#HOOK_ARGS[@]}; i++)); do
+      token="${HOOK_ARGS[i]}"
+      if [ "$skip" -eq 1 ]; then skip=0; continue; fi
+      case "$token" in
+        --abort|--quit) operation=abort ;;
+        --continue) operation=continue ;;
+        -m|-F|-s|-X|--message|--file|--strategy|--strategy-option|--into-name) skip=1 ;;
+        -*) ;;
+        *) targets+=("$token") ;;
+      esac
+    done
+    [ "$operation" != abort ] || return 0
+    if [ "$operation" = continue ]; then check_git_merge "$root"; return 0; fi
+    [ "${#targets[@]}" -le 1 ] || block "review each incoming merge commit separately"
+    if [ "${#targets[@]}" -eq 0 ]; then targets=('@{upstream}'); fi
+    check_local_target "$root" "${targets[0]}"
+    return 0
   fi
-  exit 0
-fi
 
-# Mode: Agent tool hook or piped stdin
-if [ ! -t 0 ] && [ "${1:-}" != "--check" ]; then
-  input=$(cat)
-  if [ -n "$input" ]; then
-    # 1. Direct GitHub MCP merge tools
-    tool=$(jq -r '(.tool_name // .ToolName // .name // empty)' <<<"$input" 2>/dev/null)
-    tool_lower=$(tr '[:upper:]' '[:lower:]' <<<"$tool")
-    case "$tool_lower" in
-      *merge*pull*request*|*pull*request*merge*|*enable*auto*merge*|*enable*automerge*|*merge*pr*|*pr*merge*)
-        owner=$(jq -r '(.tool_input.owner // .arguments.owner // .Arguments.owner // .owner // empty)' <<<"$input" 2>/dev/null)
-        repo=$(jq -r '(.tool_input.repo // .tool_input.repository // .arguments.repo // .arguments.repository // .Arguments.repo // .Arguments.repository // .repo // empty)' <<<"$input" 2>/dev/null)
-        pr=$(jq -r '(.tool_input.pullNumber // .tool_input.pull_number // .tool_input.pr // .arguments.pullNumber // .arguments.pull_number // .arguments.pr // .Arguments.pullNumber // .Arguments.pull_number // .Arguments.pr // .arguments.pull_request_number // .tool_input.pull_request_number // .pullNumber // .pull_number // empty)' <<<"$input" 2>/dev/null)
-        if [[ "$repo" == *"/"* ]]; then
-          owner="${repo%%/*}"
-          repo="${repo##*/}"
-        fi
-        owner="${owner:-0Bu}"
-        repo="${repo:-tibber-pulse-bot}"
-        check_pr_via_api "$owner" "$repo" "$pr"
-        exit 0
-        ;;
+  hook_normalize_command "$@"
+  [ "${#HOOK_WORDS[@]}" -gt 0 ] && [ "${HOOK_WORDS[0]##*/}" = gh ] || return 0
+  repository=$(default_repo || true)
+  for ((i=1; i<${#HOOK_WORDS[@]}; i++)); do
+    token="${HOOK_WORDS[i]}"
+    case "$token" in
+      -R|--repo|--match-head-commit)
+        [ "$((i+1))" -lt "${#HOOK_WORDS[@]}" ] || block "missing gh option value"
+        if [ "$token" = --match-head-commit ]; then expected="${HOOK_WORDS[i+1]}"; else repository="${HOOK_WORDS[i+1]}"; fi
+        i=$((i+1)) ;;
+      --repo=*) repository="${token#*=}" ;;
+      -R?*) repository="${token#-R}" ;;
+      --match-head-commit=*) expected="${token#*=}" ;;
+      pr) operation=pr ;;
+      merge) if [ "$operation" = pr ]; then operation=merge; fi ;;
+      -t|-b|-F|--subject|--body|--body-file|--author-email) i=$((i+1)) ;;
+      -*) ;;
+      *) if [ "$operation" = merge ] && [ -z "$selector" ]; then selector="$token"; fi ;;
     esac
-
-    # 2. Shell command invocations
-    cmd=$(jq -r '(.tool_input.command // .tool_input.CommandLine // .tool_input.cmd // .arguments.command // .arguments.CommandLine // .arguments.cmd // .Arguments.command // .Arguments.CommandLine // .Arguments.cmd // .command // .CommandLine // empty)' <<<"$input" 2>/dev/null)
-    if [ -n "$cmd" ]; then
-      if is_gh_pr_merge_cmd "$cmd"; then
-        pr=$(printf '%s\n' "$cmd" | grep -oE '(pull/|[[:space:]])[0-9]+' | grep -oE '[0-9]+' | head -1 || true)
-        if [ -z "$pr" ] && command -v gh >/dev/null 2>&1; then
-          pr=$(gh pr view --json number -q .number 2>/dev/null || true)
-        fi
-        [ -n "$pr" ] || block "gh pr merge detected but could not determine PR number"
-        repo_arg=$(printf '%s\n' "$cmd" | grep -oE '(-R|--repo)[[:space:]=]+[^[:space:]]+' | awk '{print $NF}' | tr -d '="' || true)
-        owner="0Bu"
-        repo="tibber-pulse-bot"
-        if [ -n "$repo_arg" ] && [[ "$repo_arg" == *"/"* ]]; then
-          owner="${repo_arg%%/*}"
-          repo="${repo_arg##*/}"
-        fi
-        check_pr_via_api "$owner" "$repo" "$pr"
-        exit 0
-      fi
-
-      if is_git_merge_cmd "$cmd"; then
-        recorded_sha=""
-        [ -f "$MARKER" ] && recorded_sha=$(cat "$MARKER" 2>/dev/null | tr -d '[:space:]')
-        if [ -z "$recorded_sha" ]; then
-          block "git merge command detected in shell without recorded review approval. Run review and approve: bash scripts/pre-merge-review-gate.sh --approve-local <sha>"
-        fi
-        target=$(extract_git_merge_target "$cmd")
-        if [ -n "$target" ]; then
-          target_sha=$(git rev-parse "$target" 2>/dev/null || true)
-          if [ -n "$target_sha" ] && [ "$target_sha" != "$recorded_sha" ]; then
-            block "git merge target ($target, SHA $target_sha) does not match recorded approved commit ($recorded_sha)."
-          fi
-        fi
-        exit 0
-      fi
-
-      # If this was an agent tool call and not a merge command, pass through
-      if jq -e '(.tool_name // .ToolName // .name // .tool_input // .arguments // .Arguments)' <<<"$input" >/dev/null 2>&1; then
-        exit 0
-      fi
-    fi
+  done
+  [ "$operation" = merge ] || return 0
+  if [[ "$selector" == https://github.com/*/pull/* ]]; then
+    repository="${selector#https://github.com/}"; repository="${repository%/pull/*}"
+    selector="${selector##*/}"
   fi
-fi
-
-# Fallback check
-if [ "${1:-}" = "--check" ]; then
-  target_sha="${2:-$(git rev-parse HEAD 2>/dev/null || true)}"
-  recorded_sha=""
-  [ -f "$MARKER" ] && recorded_sha=$(cat "$MARKER" 2>/dev/null | tr -d '[:space:]')
-  if [ -n "$target_sha" ] && [ "$target_sha" = "$recorded_sha" ]; then
-    echo "OK: $target_sha is approved for local merge."
-    exit 0
-  else
-    echo "NOTICE: $target_sha is not recorded as approved (approved: ${recorded_sha:-<none>})." >&2
-    exit 1
+  if [[ ! "$selector" =~ ^[1-9][0-9]*$ ]]; then
+    local args=(pr view --repo "$repository" --json number -q .number)
+    [ -z "$selector" ] || args+=("$selector")
+    selector=$(cd "${HOOK_CWD:-$REPO_ROOT}" && gh "${args[@]}" 2>/dev/null) || block "cannot resolve gh merge PR"
   fi
-fi
+  check_pr_via_api "$repository" "$selector" "$expected"
+}
 
-exit 0
+input=""
+[ -t 0 ] || input=$(cat)
+[ -n "$input" ] || exit 0
+jq -e 'type == "object"' >/dev/null 2>&1 <<< "$input" || block "malformed tool input"
+tool=$(jq -r '(.tool_name // .ToolName // .name // empty)' <<< "$input" | tr '[:upper:]' '[:lower:]')
+case "$tool" in
+  *merge*pull*request*|*pull*request*merge*|*enable*auto*merge*|*enable*automerge*|*merge*pr*|*pr*merge*)
+    args=$(jq '(.tool_input // .arguments // .Arguments // .)' <<< "$input")
+    repository=$(jq -r '(.repository_full_name // .repo // .repository // empty)' <<< "$args")
+    owner=$(jq -r '.owner // empty' <<< "$args")
+    if [[ "$repository" != */* ]] && [ -n "$owner" ]; then repository="$owner/$repository"; fi
+    [ -n "$repository" ] || repository=$(default_repo || true)
+    pr=$(jq -r '(.pr_number // .pullNumber // .pull_number // .pull_request_number // .pr // empty)' <<< "$args")
+    expected=$(jq -r '(.expected_head_sha // .sha // empty)' <<< "$args")
+    check_pr_via_api "$repository" "$pr" "$expected"
+    exit 0 ;;
+esac
+cmd=$(jq -r '(.tool_input.command // .tool_input.CommandLine // .tool_input.cmd // .arguments.command // .arguments.CommandLine // .arguments.cmd // .Arguments.command // .Arguments.CommandLine // .Arguments.cmd // .command // .CommandLine // empty)' <<< "$input")
+hook_each_command "$cmd" inspect_merge_command || block "cannot parse shell hook command"
