@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# Stop hook: before Claude ends a turn with changes on the branch, run the
-# CI-gated static checks (CLAUDE.md > Verification protocol) and the mechanical
+# Stop hook: before an agent ends a turn with changes on the branch, run the
+# CI-gated static checks (AGENTS.md > Verification protocol) and the mechanical
 # drift check, so "done" is never reported on a tree CI will reject. Exit 2
-# feeds the failure back to Claude instead of letting the turn end.
+# feeds the failure back to the agent instead of letting the turn end.
 set -u
 
-input=$(cat 2>/dev/null || true)
-# Already blocked once this turn: let Claude stop and report instead of looping.
-[ "$(jq -r '.stop_hook_active // false' <<<"$input" 2>/dev/null)" = "true" ] && exit 0
+input=""
+if [ ! -t 0 ]; then
+  if read -t 1 -r first_line; then
+    input=$(printf '%s\n' "$first_line"; cat 2>/dev/null || true)
+  fi
+fi
+# Already blocked once this turn: let agent stop and report instead of looping.
+[ -n "$input" ] && [ "$(jq -r '.stop_hook_active // false' <<<"$input" 2>/dev/null)" = "true" ] && exit 0
 
-cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$REPO_ROOT" || exit 0
 command -v git >/dev/null 2>&1 || exit 0
 base=$(git merge-base HEAD origin/main 2>/dev/null) || exit 0
 changed=$( { git diff --name-only "$base"; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)

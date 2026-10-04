@@ -4,6 +4,7 @@
 # looks exactly like a clean PR, so CI runs this alongside the gates.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+REPO_ROOT="$(pwd)"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 pass=0 failn=0
 expect() {  # expected-rc, description, command...
@@ -68,6 +69,97 @@ expect 1 "private key"                      hyg "-----BEGIN OPENSSH $key-----"
 expect 1 "German prose"                     hyg "Das ist nicht gut und wird entfernt"
 printf '%s\n' "$pw" > "$t/diff"
 expect 1 "password shape in diff" scripts/check-pr-hygiene.sh --text /dev/null --diff "$t/diff"
+
+# --- install-hooks.sh --------------------------------------------------------
+repo_t="$t/hook_repo"
+mkdir -p "$repo_t"
+(
+  cd "$repo_t"
+  git init -q
+  git config core.hooksPath .custom-hooks
+  "$REPO_ROOT/scripts/install-hooks.sh" >/dev/null 2>&1
+)
+expect 0 "install-hooks respects core.hooksPath" test -x "$repo_t/.custom-hooks/pre-push"
+expect 0 "install-hooks installs pre-commit" test -x "$repo_t/.custom-hooks/pre-commit"
+expect 0 "install-hooks installs pre-merge-commit" test -x "$repo_t/.custom-hooks/pre-merge-commit"
+
+# --- pre-push-secret-gate.sh -------------------------------------------------
+echo '{"name": "run_command", "arguments": {"CommandLine": "echo hello"}}' > "$t/tool_non_push"
+expect 0 "non-push tool call passes through" scripts/pre-push-secret-gate.sh < "$t/tool_non_push"
+
+(
+  cd "$repo_t"
+  touch .env.production
+  git add -f .env.production 2>/dev/null
+)
+test_pre_commit_env() {
+  (
+    cd "$repo_t"
+    "$REPO_ROOT/scripts/pre-push-secret-gate.sh" --pre-commit
+  )
+}
+expect 2 "pre-commit blocks staged .env" test_pre_commit_env
+(
+  cd "$repo_t"
+  git rm -f --cached .env.production >/dev/null 2>&1
+  rm -f .env.production
+)
+
+sec_repo="$t/sec_repo"
+mkdir -p "$sec_repo"
+(
+  cd "$sec_repo"
+  git init -q
+  git config user.email "test@example.com"
+  git config user.name "Test"
+  git config commit.gpgsign false
+  git commit -q --allow-empty -m "initial"
+  git branch -M main
+  git checkout -q -b feat
+  k="TIBBER"
+  p="PASSWORD"
+  v="secret1234"
+  printf '%s_PULSE_%s=%s\n' "$k" "$p" "$v" > config.txt
+  git add config.txt
+  git commit -q -m "add secret"
+  printf '%s_PULSE_%s=\n' "$k" "$p" > config.txt
+  git add config.txt
+  git commit -q -m "delete secret"
+  git checkout -q main
+)
+feat_sha=$(git -C "$sec_repo" rev-parse feat)
+printf 'refs/heads/feat %s refs/heads/feat 0000000000000000000000000000000000000000\n' "$feat_sha" > "$t/push_input"
+test_pre_push_leak() {
+  (
+    cd "$sec_repo"
+    "$REPO_ROOT/scripts/pre-push-secret-gate.sh" < "$t/push_input"
+  )
+}
+expect 2 "pre-push catches secret deleted in later commit" test_pre_push_leak
+
+# --- pre-merge-review-gate.sh ------------------------------------------------
+echo '{"tool_name": "bash", "tool_input": {"command": "git -C . merge feature"}}' > "$t/merge_unapproved"
+expect 2 "blocks git merge without marker" scripts/pre-merge-review-gate.sh < "$t/merge_unapproved"
+
+mkdir -p "$sec_repo/.agents"
+printf '%s\n' "1111111111111111111111111111111111111111" > "$sec_repo/.agents/.review-marker"
+printf '{"name": "run_command", "arguments": {"CommandLine": "git merge feat"}}\n' > "$t/merge_wrong_sha"
+test_merge_wrong_sha() {
+  (
+    cd "$sec_repo"
+    "$REPO_ROOT/scripts/pre-merge-review-gate.sh" < "$t/merge_wrong_sha"
+  )
+}
+expect 2 "blocks git merge when marker SHA does not match" test_merge_wrong_sha
+
+printf '%s\n' "$feat_sha" > "$sec_repo/.agents/.review-marker"
+test_merge_matching_sha() {
+  (
+    cd "$sec_repo"
+    "$REPO_ROOT/scripts/pre-merge-review-gate.sh" < "$t/merge_wrong_sha"
+  )
+}
+expect 0 "allows git merge when marker SHA matches target" test_merge_matching_sha
 
 # --- check-drift.sh ----------------------------------------------------------
 expect 0 "repository tree has no drift" scripts/check-drift.sh

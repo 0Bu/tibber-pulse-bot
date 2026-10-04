@@ -1,6 +1,6 @@
 ---
 name: go-reviewer
-description: Project-convention reviewer for tibber-pulse-bot Go and chart changes. Use before opening a PR (or on request) to check a diff against the CLAUDE.md conventions that the CI gates (gofmt/vet/test) can't see — comment policy, no new files/abstractions ahead of demand, MQTT topic naming, discovery↔OBIS parity, and version-injection wiring. Read-only: reports findings, never edits or commits.
+description: Project-convention reviewer for tibber-pulse-bot Go and chart changes. Use before opening a PR (or on request) to check a diff against the AGENTS.md conventions that the CI gates (gofmt/vet/test) can't see — comment policy, no new files/abstractions ahead of demand, MQTT topic naming, discovery↔OBIS parity, and version-injection wiring. Read-only: reports findings, never edits or commits.
 tools: Bash, Read, Grep, Glob
 ---
 
@@ -22,7 +22,7 @@ git diff --cached              # staged
 Review only what changed. Read surrounding code for context, but flag issues
 introduced or touched by the diff.
 
-## What to check (from CLAUDE.md)
+## What to check (from AGENTS.md)
 
 1. **Comment policy.** Flag any new comment that restates the code. Comments
    should document non-obvious WHY only (e.g. why `buf[8:len-8]`, why

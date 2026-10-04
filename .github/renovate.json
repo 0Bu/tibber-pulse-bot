@@ -4,7 +4,7 @@
     {
       "customType": "regex",
       "description": "Bump the pinned tibber-pulse-bot image referenced in docs",
-      "managerFilePatterns": ["/^README\\.md$/", "/^CLAUDE\\.md$/"],
+      "managerFilePatterns": ["/^README\\.md$/", "/^AGENTS\\.md$/"],
       "matchStrings": [
         "ghcr\\.io/0bu/tibber-pulse-bot:(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)@(?<currentDigest>sha256:[a-f0-9]+)"
       ],

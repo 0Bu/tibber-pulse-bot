@@ -40,7 +40,7 @@ grep -Eq '^[0-9a-f]{40}$' <<<"$head_sha" || { echo "check-pr-gates: --head-sha m
 # Deliberately forging both identities needs push access; that residual risk
 # is accepted for a single-maintainer repo.
 RENOVATE_EMAIL="bot@renovateapp.com"
-RENOVATE_FILES='^(Dockerfile|go\.mod|go\.sum|docker-compose\.yml|README\.md|CLAUDE\.md|chart/Chart\.yaml|chart/values\.yaml|\.github/workflows/[A-Za-z0-9._-]+\.ya?ml)$'
+RENOVATE_FILES='^(Dockerfile|go\.mod|go\.sum|docker-compose\.yml|README\.md|AGENTS\.md|CLAUDE\.md|chart/Chart\.yaml|chart/values\.yaml|\.github/workflows/[A-Za-z0-9._-]+\.ya?ml)$'
 if [ -n "$meta_file" ] && [ -n "$commits_file" ]; then
   same_repo=$(jq -r '(.head.repo.full_name // "") == (.base.repo.full_name // "-")' "$meta_file" 2>/dev/null)
   ref=$(jq -r '.head.ref // ""' "$meta_file" 2>/dev/null)
@@ -59,7 +59,7 @@ project-audit;.;project-audit (incl. scripts/check-drift.sh) found no doc drift
 pr-hygiene-review;.;commits, PR text and diff carry no personal data / secrets and are English
 ha-discovery-validate;^(internal/(discovery|output|sml)/|cmd/tibber-pulse-bot/);HA discovery parity, availability and expire_after contracts hold
 chart-lint;^chart/;chart-lint matrix (password modes, fail guards, knobs) renders as expected
-live-test;^internal/(pulse|sml)/;end-to-end run against the real bridge (CLAUDE.md > Verification protocol)
+live-test;^internal/(pulse|sml)/;end-to-end run against the real bridge (AGENTS.md > Verification protocol)
 EOF
 )
 
@@ -113,7 +113,7 @@ if [ "$missing" -ne 0 ]; then
 check-pr-gates: FAILED. Run each missing review on head $short, then tick its
 line in the PR body's "Merge gates" section with a bare stamp, e.g.
   - [x] \`\$project-audit\` clean — merge gate @ $short
-(see .github/pull_request_template.md and CLAUDE.md > Merge gates).
+(see .github/pull_request_template.md and AGENTS.md > Merge gates).
 EOF
   exit 1
 fi

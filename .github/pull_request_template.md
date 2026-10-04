@@ -19,11 +19,11 @@ comment or in code fences are ignored by scripts/check-pr-gates.sh.
 - [ ] `scripts/check-drift.sh` clean (CI `test`)
 - [ ] `scripts/check-pr-hygiene.sh` clean (pre-push hook; CI `pr-policy` also checks this PR's text)
 - [ ] `helm lint chart` + render of the password modes (CI `helm`) — only if `chart/` changed
-- [ ] End-to-end against the real bridge / broker, or why not (CLAUDE.md > Verification protocol)
+- [ ] End-to-end against the real bridge / broker, or why not (AGENTS.md > Verification Protocol)
 
 ## Merge gates
 
-<!-- Required by the `pr-policy` check and the Claude pre-merge hook. Tick a gate
+<!-- Required by the `pr-policy` check and pre-merge review gate. Tick a gate
      only after running it on the CURRENT head, and stamp it with a BARE sha:
      `git rev-parse --short=12 HEAD`. Wrapping the sha in backticks reads as no
      stamp. Any new push re-stales every stamp. Delete lines whose condition does

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Mechanical half of the pr-hygiene-review gate: contributor-authored text must
 # not carry personal data or secrets, and prose must be English (the project
-# is public; see CLAUDE.md > Security). Catches what has a reliable SHAPE:
+# is public; see AGENTS.md > Security). Catches what has a reliable SHAPE:
 #   - an email outside GitHub noreply / example / the Renovate identity
 #   - an international or German phone number, a GPS coordinate pair
 #   - a private key block or a GitHub / AWS token

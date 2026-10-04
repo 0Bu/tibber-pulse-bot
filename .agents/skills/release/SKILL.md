@@ -7,7 +7,7 @@ disable-model-invocation: true
 # release
 
 Releases are **automated** — for the normal case you do not tag by hand (see
-[CLAUDE.md](../../../CLAUDE.md) › "Build-time version injection" and
+[AGENTS.md](../../../AGENTS.md) › "Build, Versioning & Deployment" and
 [.github/workflows/release.yml](../../../.github/workflows/release.yml)).
 
 ## The automated flow (normal patch release)

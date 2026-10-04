@@ -21,7 +21,7 @@ command -v govulncheck >/dev/null 2>&1 && govulncheck ./... || echo "govulncheck
 Execute the repository's pre-push secret audit script:
 
 ```bash
-bash .claude/hooks/pre-push-secret-gate.sh --scan
+bash scripts/pre-push-secret-gate.sh --scan
 ```
 
 This checks:
