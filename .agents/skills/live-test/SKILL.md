@@ -18,13 +18,13 @@ This skill runs automated live verification tests against a physical **Tibber Pu
 Run the automated live verification script:
 
 ```bash
-bash .claude/skills/live-test/scripts/run_live_test.sh [BRIDGE_IP] [PASSWORD] [NODE_ID] [MQTT_HOST]
+bash .agents/skills/live-test/scripts/run_live_test.sh [BRIDGE_IP] [PASSWORD] [NODE_ID] [MQTT_HOST]
 ```
 
 Or simply (inheriting defaults `192.168.107.118` and password from `.env`/env):
 
 ```bash
-bash .claude/skills/live-test/scripts/run_live_test.sh
+bash .agents/skills/live-test/scripts/run_live_test.sh
 ```
 
 ## What This Skill Tests

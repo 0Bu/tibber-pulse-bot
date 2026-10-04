@@ -6,8 +6,8 @@ disable-model-invocation: true
 
 # verify
 
-Runs the project's Verification protocol (see [CLAUDE.md](../../../CLAUDE.md) ›
-"Verification protocol"). The static gates are CI-gated and run automatically;
+Runs the project's Verification protocol (see [AGENTS.md](../../../AGENTS.md) ›
+"Verification Protocol"). The static gates are CI-gated and run automatically;
 the end-to-end steps need a real bridge + broker and are run on request.
 
 ## 1. Static gates (always run — all must pass)

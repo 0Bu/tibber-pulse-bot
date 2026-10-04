@@ -1,6 +1,6 @@
 ---
 name: project-audit
-description: Audit tibber-pulse-bot for internal inconsistencies and documentation drift — CLI flags vs docs, image version/digest sync across chart/compose/README, module-path consistency, CLAUDE.md path references, env-var and chart-values parity, and code defaults vs documented defaults. Use before a PR merge (the pre-merge review gate expects it) or whenever you want to confirm docs still match the code. Read-only: reports drift, never edits.
+description: Audit tibber-pulse-bot for internal inconsistencies and documentation drift — CLI flags vs docs, image version/digest sync across chart/compose/README, module-path consistency, AGENTS.md path references, env-var and chart-values parity, and code defaults vs documented defaults. Use before a PR merge (the pre-merge review gate expects it) or whenever you want to confirm docs still match the code. Read-only: reports drift, never edits.
 ---
 
 # project-audit
@@ -35,7 +35,7 @@ reflected in the docs, and no doc should mention a flag that no longer exists.
 grep -nE 'flag\.(String|Bool|Int|Duration)\(' cmd/tibber-pulse-bot/main.go
 ```
 
-Cross-check each `--flag` and its **default** against `README.md`, `CLAUDE.md`,
+Cross-check each `--flag` and its **default** against `README.md`, `AGENTS.md`,
 and the chart (`chart/values.yaml` + `chart/templates/deployment.yaml` args).
 Flag added but undocumented, flag removed but still documented, or a default
 that disagrees (current defaults: `--reconnect-delay` 100 ms,
@@ -71,21 +71,21 @@ same handle. Image references are deliberately lowercase (`ghcr.io/0bu/…` —
 GHCR rejects mixed case); flag any *other* mixed/loweredcase inconsistency,
 and confirm README/chart links point at `github.com/0Bu/…`.
 
-## 4. CLAUDE.md path references exist
+## 4. AGENTS.md path references exist
 
-Every repo-relative path CLAUDE.md points at should resolve:
+Every repo-relative path AGENTS.md points at should resolve:
 
 ```bash
-grep -oE '(cmd|internal|chart)/[A-Za-z0-9._/-]+' CLAUDE.md | sort -u \
+grep -oE '(cmd|internal|chart|scripts|\.agents|\.github)/[A-Za-z0-9._/-]+' AGENTS.md | sort -u \
   | grep -vE '^(chart/charts/|dist/)' \
   | while read -r p; do
-      [ -e "$p" ] || echo "MISSING: $p referenced in CLAUDE.md"
+      [ -e "$p" ] || echo "MISSING: $p referenced in AGENTS.md"
     done
 ```
 
 A missing path means a file was moved/renamed without updating the docs.
 `chart/charts/` and `dist/` are excluded — they're gitignored build outputs
-CLAUDE.md mentions by name but that don't exist until a build runs; their
+AGENTS.md mentions by name but that don't exist until a build runs; their
 absence is expected, not drift.
 
 ## 5. Env-var parity (.env.example ↔ docker-compose ↔ chart)
@@ -114,20 +114,19 @@ grep -roE '\.Values\.[A-Za-z0-9._]+' chart/templates/ | sed 's/.*\.Values\.//' |
 
 `TestObisNamesHaveDiscoverySpecs` enforces this in CI, so it should already be
 green — but confirm the `discovery.Sensors` keys and `obisNames` numeric values
-still line up, and that `CLAUDE.md`'s claim "obisNames already covers the
+still line up, and that `AGENTS.md`'s claim "obisNames already covers the
 extended set" matches the actual map.
 
 ## 8. MQTT topic set vs docs
 
 The sink publishes exactly three state topics under `<topic-prefix>`:
 `readings` and `diagnostics` (not retained) and `status` (retained
-`online`/`offline`, also the MQTT Last Will). Confirm README "MQTT topics",
-CLAUDE.md "MQTT topic naming", and AGENTS.md's architecture diagram list the
-same set, and that no doc still claims "exactly two" topics:
+`online`/`offline`, also the MQTT Last Will). Confirm README "MQTT topics"
+and AGENTS.md list the same set, and that no doc still claims "exactly two" topics:
 
 ```bash
 grep -nE 'availabilityTopic|SetWill|"/readings"|"/diagnostics"|"/status"' internal/output/output.go
-grep -nE 'topic-prefix>/|<prefix>/|exactly two' README.md CLAUDE.md AGENTS.md
+grep -nE 'topic-prefix>/|<prefix>/|exactly two' README.md AGENTS.md
 ```
 
 ## 9. Bridge endpoint names
@@ -138,7 +137,7 @@ to legacy `/data.json` / `/metrics.json` (`internal/pulse/client.go`,
 endpoint should mention the modern one first:
 
 ```bash
-grep -rnE '/(node_)?(data|metrics)\.json' README.md CLAUDE.md AGENTS.md .claude/skills
+grep -rnE '/(node_)?(data|metrics)\.json' README.md AGENTS.md .agents/skills
 ```
 
 A lone `/data.json` or `/metrics.json` without the modern counterpart → drift.

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$(basename \"$f\")\" in .env.example|.env.sample) exit 0;; .env|.env.*) echo \"Blocked: $f may contain the bridge password (see CLAUDE.md > Security). Edit .env.example instead.\" >&2; exit 2;; esac; exit 0"
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$(basename \"$f\")\" in .env.example) exit 0;; .env|.env.*) echo \"Blocked: $f may contain the bridge password (see AGENTS.md > Security). Edit .env.example instead.\" >&2; exit 2;; esac; exit 0"
           }
         ]
       },
@@ -15,16 +15,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre-push-secret-gate.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/pre-push-secret-gate.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/pre-merge-review-gate.sh\""
           }
         ]
       },
       {
-        "matcher": "mcp__github__merge_pull_request|mcp__github__enable_pr_auto_merge",
+        "matcher": ".*merge_pull_request.*|.*enable.*auto_merge.*",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre-merge-review-gate.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/pre-merge-review-gate.sh\""
           }
         ]
       }
@@ -34,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-verify.sh\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/stop-verify.sh\"",
             "timeout": 300
           }
         ]
