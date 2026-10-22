@@ -3,7 +3,7 @@ services:
     # Published image, pinned by digest and kept current by Renovate
     # (docker-compose changes intentionally do NOT trigger a tag/build).
     # To build from source instead, see "Run with Docker" in the README.
-    image: ghcr.io/0bu/tibber-pulse-bot:1.0.41@sha256:8bb001c348d27b9b826727dccf70f17f4c49dd6f30ebf908a8fc56418e749734
+    image: ghcr.io/0bu/tibber-pulse-bot:1.0.42@sha256:9c30f9030a2d5853d3cd7de4b76cd306e341d49ae79bb0d8bfcebf13b48e448e
     container_name: tibber-pulse-bot
     restart: unless-stopped
     environment:
