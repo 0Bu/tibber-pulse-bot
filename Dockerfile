@@ -1,7 +1,7 @@
 # Builder always runs on the native build platform and cross-compiles to the
 # target arch (CGO is off, so Go cross-compiles trivially). This avoids QEMU
 # emulation of an arm64 toolchain, which made the multi-arch build ~10x slower.
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
