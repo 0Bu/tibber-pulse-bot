@@ -29,7 +29,8 @@ Releases are **automated** — for the normal case you do not tag by hand (see
    path-filtered out of the release trigger, so they never start another build.
 
 **So to ship a patch release: merge the code PR to `main`** and let the pipeline
-run. Then verify and merge the Renovate PR.
+run. The Renovate bump PR merges itself once its tests are green (no merge
+gates for Renovate version updates); verify that it landed.
 
 ## Verify a release
 
@@ -40,7 +41,10 @@ gh run watch                                  # follow the in-flight build
 git fetch --tags origin && git tag --list 'v*' | sort -V | tail -3
 ```
 
-Confirm the Renovate PR lands, review the new version + digest, and merge it.
+Confirm the Renovate PR lands with the new version + digest. Renovate re-runs
+when the checks on its branch finish and automerges it. If it does not land,
+find out why: a red check means the update breaks something, so fix that in
+its own PR or close the update, but never merge a red Renovate PR by hand.
 Consumers pin the immutable digest `:X.Y.Z@sha256:<digest>`.
 
 ## Manual override — minor / major bump
