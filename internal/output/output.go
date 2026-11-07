@@ -52,7 +52,7 @@ func (s *StdoutSink) Close() {}
 // --- compact one-line stdout sink ---------------------------------------
 
 // CompactStdoutSink prints one line per publish, container-log friendly.
-// Format: "<timestamp>  power=3.000W import=2423174.800Wh export=253615.500Wh"
+// Format: "15:04:05 P=3.000W Eimp=2423174.800Wh Eexp=253615.500Wh"
 type CompactStdoutSink struct {
 	w    io.Writer
 	keys []string // ordered list of names to include; others are dropped
@@ -199,15 +199,16 @@ func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix s
 			_ = m.publish(availabilityTopic, true, "online")
 		})
 
-	c := mqtt.NewClient(opts)
-	t := c.Connect()
+	// Assign before Connect: paho starts the OnConnect goroutine before the
+	// connect token completes, and that handler publishes through m.client.
+	m.client = mqtt.NewClient(opts)
+	t := m.client.Connect()
 	if !t.WaitTimeout(10 * time.Second) {
 		return nil, fmt.Errorf("mqtt: connect timeout to %s:%d", host, port)
 	}
 	if err := t.Error(); err != nil {
 		return nil, fmt.Errorf("mqtt: connect %s:%d: %w", host, port, err)
 	}
-	m.client = c
 	return m, nil
 }
 
@@ -572,7 +573,7 @@ func (m *MQTTSink) enumerateRetainedConfigs() (map[string]struct{}, bool) {
 		default:
 		}
 	})
-	if !tok.WaitTimeout(5*time.Second) || tok.Error() != nil {
+	if !tok.WaitTimeout(5*time.Second) || tok.Error() != nil || subscribeRefused(tok, filter) {
 		m.client.Unsubscribe(filter)
 		return copyStringSet(&mu, found), false
 	}
@@ -611,6 +612,17 @@ func (m *MQTTSink) enumerateRetainedConfigs() (map[string]struct{}, bool) {
 	}
 	m.client.Unsubscribe(filter)
 	return copyStringSet(&mu, found), true
+}
+
+// subscribeRefused reports a SUBACK failure code (0x80, e.g. a broker ACL
+// denial). paho records it only in the token result, not as a token error.
+func subscribeRefused(tok mqtt.Token, filter string) bool {
+	st, ok := tok.(*mqtt.SubscribeToken)
+	if !ok {
+		return false
+	}
+	code, granted := st.Result()[filter]
+	return granted && code >= 0x80
 }
 
 // copyStringSet returns a snapshot of src taken under mu, so the caller never

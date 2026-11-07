@@ -1,9 +1,12 @@
 package output
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -681,5 +684,110 @@ func TestMQTTSinkClosePublishesOffline(t *testing.T) {
 	}
 	if !msg.retain {
 		t.Error("expected status message to be retained")
+	}
+}
+
+// brokerPublish is one PUBLISH packet received by the in-process test broker.
+type brokerPublish struct {
+	topic   string
+	payload string
+	retain  bool
+}
+
+// startTestBroker accepts one MQTT 3.1.1 client and answers just enough of the
+// protocol for paho to connect, publish and subscribe; every SUBSCRIBE is
+// answered with subackCode. QoS 1 publishes get a PUBACK, QoS 2 is unsupported.
+func startTestBroker(t *testing.T, subackCode byte) (port int, pubs <-chan brokerPublish) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	ch := make(chan brokerPublish, 16)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		r := bufio.NewReader(conn)
+		for {
+			hdr, err := r.ReadByte()
+			if err != nil {
+				return
+			}
+			var n, shift int
+			for {
+				b, err := r.ReadByte()
+				if err != nil {
+					return
+				}
+				n |= int(b&0x7f) << shift
+				if b&0x80 == 0 {
+					break
+				}
+				shift += 7
+			}
+			body := make([]byte, n)
+			if _, err := io.ReadFull(r, body); err != nil {
+				return
+			}
+			switch hdr >> 4 {
+			case 1: // CONNECT
+				_, _ = conn.Write([]byte{0x20, 0x02, 0x00, 0x00})
+			case 3: // PUBLISH
+				tl := int(body[0])<<8 | int(body[1])
+				topic, rest := string(body[2:2+tl]), body[2+tl:]
+				if qos := hdr >> 1 & 0x03; qos > 0 {
+					_, _ = conn.Write([]byte{0x40, 0x02, rest[0], rest[1]})
+					rest = rest[2:]
+				}
+				select {
+				case ch <- brokerPublish{topic: topic, payload: string(rest), retain: hdr&0x01 != 0}:
+				default: // a test that does not read publishes must not stall the broker
+				}
+			case 8: // SUBSCRIBE: one filter per request is all the sink sends
+				_, _ = conn.Write([]byte{0x90, 0x03, body[0], body[1], subackCode})
+			case 10: // UNSUBSCRIBE
+				_, _ = conn.Write([]byte{0xb0, 0x02, body[0], body[1]})
+			case 12: // PINGREQ
+				_, _ = conn.Write([]byte{0xd0, 0x00})
+			case 14: // DISCONNECT
+				return
+			}
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port, ch
+}
+
+func TestNewMQTTSinkPublishesOnlineOnConnect(t *testing.T) {
+	port, pubs := startTestBroker(t, 0x00)
+	m, err := NewMQTTSink("127.0.0.1", port, "test-client", "tibber/pulse", "", 30, 180)
+	if err != nil {
+		t.Fatalf("NewMQTTSink: %v", err)
+	}
+	defer m.Close()
+
+	select {
+	case p := <-pubs:
+		if p.topic != "tibber/pulse/status" || p.payload != "online" || !p.retain {
+			t.Fatalf("first publish = %+v, want retained online on tibber/pulse/status", p)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no availability publish after connect")
+	}
+}
+
+func TestEnumerateRetainedConfigsRefusedSubscription(t *testing.T) {
+	port, _ := startTestBroker(t, 0x80)
+	m, err := NewMQTTSink("127.0.0.1", port, "test-client", "tibber/pulse", "homeassistant", 30, 180)
+	if err != nil {
+		t.Fatalf("NewMQTTSink: %v", err)
+	}
+	defer m.Close()
+
+	if _, ok := m.enumerateRetainedConfigs(); ok {
+		t.Fatal("SUBACK 0x80 must report failure so the publish-only legacy cleanup runs")
 	}
 }
