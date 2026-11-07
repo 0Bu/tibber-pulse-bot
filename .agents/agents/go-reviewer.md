@@ -38,8 +38,8 @@ introduced or touched by the diff.
    (`internal/sml/parse.go`) for a *numeric* reading, there must be a matching
    entry in `discovery.Sensors` (`internal/discovery/discovery.go`).
    `TestObisNamesHaveDiscoverySpecs` catches the numeric case — but also check
-   the reverse and the string-valued exclusions (`device_id`, `manufacturer`,
-   `meter_serial` carry text and intentionally have no sensor).
+   the reverse and the string-valued exclusions (`server_id`, `device_id`,
+   `manufacturer`, `meter_serial` carry text and intentionally have no sensor).
 
 4. **MQTT topic naming.** One SML telegram → `<prefix>/readings` JSON; reduced
    bridge health → `<prefix>/diagnostics` JSON. Known OBIS values are top-level

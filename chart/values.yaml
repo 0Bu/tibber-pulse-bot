@@ -45,10 +45,11 @@ mqtt:
 homeAssistant:
   discovery: false
   discoveryPrefix: "homeassistant"
-  expireAfter: 0 # 0 = auto (30s in push mode, max(30s, 3*pollInterval) in poll mode), >0 = seconds, <0 = disabled
+  expireAfter: 0 # readings: 0 = auto (max(30s, 3*pollInterval) in both modes), >0 = seconds, <0 = disabled; diagnostics: max(3*metricsInterval, readings value)
 
 # Acquisition mode: "push" (WebSocket, recommended) or "poll"
 mode: push
+# Also used when push mode falls back to polling (legacy firmware or no /ws frames).
 pollInterval: 10s
 wsIdleTimeout: 60s
 reconnectDelay: 100ms

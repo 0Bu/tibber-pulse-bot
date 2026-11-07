@@ -39,7 +39,7 @@ MQTT sink in `internal/output/output.go`:
 - **Expiration**: `expire_after` is emitted only when > 0. Readings and
   diagnostics get separate values from `calculateExpiration` in
   `cmd/tibber-pulse-bot/main.go`:
-  - `--expire-after 0` (auto): readings 30 s in push mode, `max(30, 3 × --interval)` in poll mode;
+  - `--expire-after 0` (auto): readings `max(30, 3 × --interval)` in both modes (push can fall back to poll);
     diagnostics `3 × --metrics-interval`, raised to the readings value if that is larger.
   - `--expire-after N > 0`: readings N; diagnostics `max(N, 3 × --metrics-interval)`.
   - `--expire-after < 0`: disabled for both.

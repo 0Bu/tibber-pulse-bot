@@ -17,6 +17,11 @@ if [[ -z "$PASSWORD" ]]; then
   exit 1
 fi
 
+# Keep the password out of the process list: the bot reads it from the
+# environment, curl from a config on stdin.
+export TIBBER_PULSE_PASSWORD="$PASSWORD"
+bridge_curl() { printf 'user = "admin:%s"\n' "$PASSWORD" | curl -K - "$@"; }
+
 echo "==================================================================="
 echo "Tibber Pulse Bridge Live Test"
 echo "Target Bridge: $BRIDGE_IP (Node: $NODE_ID)"
@@ -27,7 +32,7 @@ echo "==================================================================="
 # 1. HTTP Ping / Reachability
 echo ""
 echo "[1/5] Checking bridge HTTP reachability and credentials..."
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/status.json?timeout=0" || true)
+HTTP_CODE=$(bridge_curl -s -o /dev/null -w "%{http_code}" "http://${BRIDGE_IP}/status.json?timeout=0" || true)
 if [[ "$HTTP_CODE" == "200" ]]; then
   echo "  ✓ HTTP 200 OK — Bridge reachable & authenticated"
 elif [[ "$HTTP_CODE" == "401" ]]; then
@@ -41,11 +46,11 @@ fi
 # 2. Query Diagnostics Endpoints
 echo ""
 echo "[2/5] Querying bridge status, nodes, and metrics..."
-STATUS_JSON=$(curl -s -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/status.json?timeout=0")
-NODES_JSON=$(curl -s -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/nodes.json")
-METRICS_JSON=$(curl -s -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/node_metrics.json?node_id=${NODE_ID}")
+STATUS_JSON=$(bridge_curl -s "http://${BRIDGE_IP}/status.json?timeout=0" || true)
+NODES_JSON=$(bridge_curl -s "http://${BRIDGE_IP}/nodes.json" || true)
+METRICS_JSON=$(bridge_curl -s "http://${BRIDGE_IP}/node_metrics.json?node_id=${NODE_ID}" || true)
 if echo "$METRICS_JSON" | grep -q -i "Nothing matches"; then
-  METRICS_JSON=$(curl -s -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/metrics.json?node_id=${NODE_ID}")
+  METRICS_JSON=$(bridge_curl -s "http://${BRIDGE_IP}/metrics.json?node_id=${NODE_ID}" || true)
 fi
 
 WIFI_RSSI=$(echo "$STATUS_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin).get('wifi_status', {}).get('rssi', 'n/a'))" 2>/dev/null || echo "n/a")
@@ -65,9 +70,9 @@ echo "[3/5] Polling binary SML telegram and decoding with sml-inspect..."
 TMP_SML=$(mktemp /tmp/sml_live_XXXXXX.bin)
 SML_LEN=0
 for attempt in {1..5}; do
-  HTTP_STATUS=$(curl -s -w "%{http_code}" -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/node_data.json?node_id=${NODE_ID}" -o "$TMP_SML")
+  HTTP_STATUS=$(bridge_curl -s -w "%{http_code}" "http://${BRIDGE_IP}/node_data.json?node_id=${NODE_ID}" -o "$TMP_SML" || true)
   if [[ "$HTTP_STATUS" == "404" ]]; then
-    HTTP_STATUS=$(curl -s -w "%{http_code}" -u "admin:${PASSWORD}" "http://${BRIDGE_IP}/data.json?node_id=${NODE_ID}" -o "$TMP_SML")
+    HTTP_STATUS=$(bridge_curl -s -w "%{http_code}" "http://${BRIDGE_IP}/data.json?node_id=${NODE_ID}" -o "$TMP_SML" || true)
   fi
   SML_LEN=$(wc -c < "$TMP_SML" | tr -d ' ')
   if [[ "$SML_LEN" -gt 0 && "$HTTP_STATUS" == "200" ]]; then
@@ -103,7 +108,7 @@ import subprocess, time, sys
 proc = subprocess.Popen(
     ["/tmp/tibber-pulse-bot-livetest",
      "--pulse-host", sys.argv[1],
-     "--pulse-password", sys.argv[2],
+     "--pulse-node", sys.argv[2],
      "--mode", "push",
      "--reconnect-delay", "100ms"],
     stdout=subprocess.PIPE,
@@ -118,13 +123,17 @@ except Exception:
     proc.kill()
     stdout, _ = proc.communicate()
 print(stdout)
-' "$BRIDGE_IP" "$PASSWORD")
+' "$BRIDGE_IP" "$NODE_ID")
 
-TELEGRAM_COUNT=$(echo "$PUSH_LOG" | grep -c -E 'readings\)|power=' || true)
-echo "  ✓ Received $TELEGRAM_COUNT telegram(s) in 6 seconds"
-if [[ $TELEGRAM_COUNT -gt 0 ]]; then
-  echo "  ✓ Sample reading: $(echo "$PUSH_LOG" | grep -E 'power_total|power=' | head -n1 | tr -d ' ')"
+TELEGRAM_COUNT=$(echo "$PUSH_LOG" | grep -c -E 'readings\)' || true)
+if [[ $TELEGRAM_COUNT -eq 0 ]]; then
+  echo "  ✗ No telegram received in 6 seconds" >&2
+  echo "$PUSH_LOG" | tail -n 5 >&2
+  rm -f /tmp/tibber-pulse-bot-livetest
+  exit 1
 fi
+echo "  ✓ Received $TELEGRAM_COUNT telegram(s) in 6 seconds"
+echo "  ✓ Sample reading: $(echo "$PUSH_LOG" | grep -E 'power_total' | head -n1 | tr -d ' ')"
 
 if echo "$PUSH_LOG" | grep -q 'bridge:'; then
   echo "  ✓ Diagnostics:    $(echo "$PUSH_LOG" | grep 'bridge:' | head -n1)"
@@ -165,7 +174,7 @@ else
   SUB_PID=$!
   sleep 1
   timeout -s INT 15 /tmp/tibber-pulse-bot-livetest \
-    --pulse-host "$BRIDGE_IP" --pulse-password "$PASSWORD" \
+    --pulse-host "$BRIDGE_IP" --pulse-node "$NODE_ID" \
     --mqtt-host "$MQTT_HOST" --mqtt-topic "$LT_PREFIX" \
     --mqtt-client-id "tibber-pulse-bot-livetest-$$" \
     --ha-discovery --ha-discovery-prefix "$LT_DISCOVERY" --quiet >/dev/null 2>&1 || true
