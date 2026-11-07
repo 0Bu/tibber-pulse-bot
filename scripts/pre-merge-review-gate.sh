@@ -75,7 +75,10 @@ check_pr_via_api() {
       "https://api.github.com/repos/$repository/$1"
   }
   api "pulls/$pr" > "$tmp/pr.json" || block "cannot fetch PR #$pr"
-  api "pulls/$pr/files?per_page=100" | jq -er '.[].filename' > "$tmp/files" || block "cannot fetch changed files"
+  api "pulls/$pr/files?per_page=100" > "$tmp/files.json" || block "cannot fetch changed files"
+  jq -er '.[].filename' "$tmp/files.json" > "$tmp/files" || block "cannot read changed files"
+  # Renames count under both paths for gate selection.
+  jq -r '.[] | .filename, (.previous_filename // empty)' "$tmp/files.json" > "$tmp/gate-files" || block "cannot read changed files"
   api "pulls/$pr/commits?per_page=100" > "$tmp/commits.json" || block "cannot fetch PR commits"
   [ "$(wc -l < "$tmp/files" | tr -d '[:space:]')" = "$(jq -r '.changed_files' "$tmp/pr.json")" ] || block "incomplete PR file list; use the paginated CI gate"
   [ "$(jq 'length' "$tmp/commits.json")" = "$(jq '.commits' "$tmp/pr.json")" ] || block "incomplete PR commit list; use the paginated CI gate"
@@ -83,7 +86,7 @@ check_pr_via_api() {
   [ -z "$expected" ] || [ "$expected" = "$head" ] || block "requested merge head differs from the live PR head"
   jq -r '.body // ""' "$tmp/pr.json" > "$tmp/body" || block "cannot read PR body"
   out=$("$SCRIPT_DIR/check-pr-gates.sh" --body-file "$tmp/body" --head-sha "$head" \
-    --files-file "$tmp/files" --meta-file "$tmp/pr.json" --commits-file "$tmp/commits.json" 2>&1) || block "$out"
+    --files-file "$tmp/gate-files" --meta-file "$tmp/pr.json" --commits-file "$tmp/commits.json" 2>&1) || block "$out"
   echo "OK: PR #$pr head ${head:0:12} has all required review gates recorded."
 }
 

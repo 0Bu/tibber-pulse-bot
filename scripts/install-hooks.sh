@@ -14,6 +14,17 @@ cd "$REPO_ROOT"
 
 # Determine effective git hooks directory:
 configured_hooks_path=$(git config --get core.hooksPath 2>/dev/null || true)
+# The wrappers call this clone's scripts/, so a global or system hooksPath
+# would make every other repository using it fail its hooks.
+hooks_path_scope=$(git config --show-scope --get core.hooksPath 2>/dev/null | cut -f1 || true)
+case "$hooks_path_scope" in
+  ""|local|worktree) ;;
+  *)
+    echo "install-hooks: core.hooksPath ($configured_hooks_path) comes from $hooks_path_scope config;" >&2
+    echo "installing there would affect every repository that uses it. Set a repository-local" >&2
+    echo "core.hooksPath (git config --local core.hooksPath <dir>) and re-run." >&2
+    exit 2 ;;
+esac
 if [ -n "$configured_hooks_path" ]; then
   configured_hooks_path="${configured_hooks_path/#\~/$HOME}"
   if [[ "$configured_hooks_path" = /* ]]; then

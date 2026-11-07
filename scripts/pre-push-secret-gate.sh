@@ -27,15 +27,23 @@ check_paths() {
   done < "$1"
 }
 
+# Added lines of a git patch. Only the file header (between "diff --git" and the
+# first hunk) is skipped, so added lines that themselves start with "+" count.
+added_lines() {
+  awk '/^diff --git /{h=1; next} /^@@/{h=0; next} !h && /^\+/{print substr($0, 2)}' "$1"
+}
+
+# grep -a throughout: GNU grep stops printing matches once it decides a patch
+# is binary (a NUL past git's 8000-byte probe, invalid UTF-8 in the locale).
 check_content() {
   local added="$1" assignment='^\+[[:space:]]*(export[[:space:]]+)?(TIBBER_PULSE_PASSWORD|MQTT_PASSWORD|pulse[._]?password|password)[[:space:]]*[:=][[:space:]]*'
-  if grep -qE '^\+[[:space:]]*-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----' "$added"; then
+  if grep -aqE '^\+[[:space:]]*-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----' "$added"; then
     fail "private key block detected (content redacted)"
   fi
-  if grep -iE "$assignment" "$added" \
-    | grep -viE "${assignment}$" \
-    | grep -viE "${assignment}((\"\"|''|null|~)|[\"']?(changeme|change-me|example|dummy|dummy1234|dummy-9char|placeholder|your[-_]password|replace[-_]me|xxxx(-xxxx)?|<[^>]*>)[\"']?)[[:space:]]*(#.*)?$" \
-    | grep -viE "${assignment}"'"?(\$\{.*\}|\$\(.*\)|\$[A-Za-z_][A-Za-z0-9_]*)"?[[:space:]]*(#.*)?$' \
+  if grep -aiE "$assignment" "$added" \
+    | grep -aviE "${assignment}$" \
+    | grep -aviE "${assignment}((\"\"|''|null|~)|[\"']?(changeme|change-me|example|dummy|dummy1234|dummy-9char|placeholder|your[-_]password|replace[-_]me|xxxx(-xxxx)?|<[^>]*>)[\"']?)[[:space:]]*(#.*)?$" \
+    | grep -aviE "${assignment}"'"?(\$\{.*\}|\$\(.*\)|\$[A-Za-z_][A-Za-z0-9_]*)"?[[:space:]]*(#.*)?$' \
     > "$tmp/password-hits"; then
     fail "credential assignment detected (values redacted)"
   fi
@@ -72,7 +80,7 @@ scan_commits() {
     git show -s --format='%B' "$commit" >> "$tmp/text" || fail "cannot inspect commit message $commit"
     # diff-tree -m compares a merge against every parent; git log -p omits
     # merge resolutions by default and would miss newly introduced secrets.
-    sed -n '/^+[^+]/s/^+//p' "$tmp/patch" >> "$tmp/diff"
+    added_lines "$tmp/patch" >> "$tmp/diff"
   done < "$tmp/commits"
   check_hygiene
 }
@@ -99,7 +107,7 @@ scan_changes() {
     check_content "$tmp/patch"
   fi
   : > "$tmp/text"
-  sed -n '/^+[^+]/s/^+//p' "$tmp/patch" > "$tmp/diff"
+  added_lines "$tmp/patch" > "$tmp/diff"
   check_hygiene
 }
 
