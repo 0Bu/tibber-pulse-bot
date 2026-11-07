@@ -22,7 +22,9 @@ coordinates, private keys, GitHub/AWS tokens, bridge-password-shaped codes
 (4+4 uppercase alphanumerics mixing letters and digits; the placeholder
 `XXXX-XXXX` is allowed) and German prose. The
 pre-push hook runs it on every push; the `pr-policy` workflow runs it on the
-live PR title/description and every commit's patch.
+live PR title/description and every commit's patch, except for a verified
+Renovate version update (AGENTS.md > Renovate exemption), whose text is
+upstream release notes.
 
 ## 2. Read what the script cannot judge
 

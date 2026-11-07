@@ -63,6 +63,10 @@ meta renovate/x fork/tibber-pulse-bot;                             expect 1 "ren
 meta renovate/x 0Bu/tibber-pulse-bot; printf '.github/renovate.json\n' >> "$t/files"; expect 1 "renovate-only: unmanaged file is not Renovate" ronly
 expect 2 "renovate-only: missing commits file is an input error" scripts/check-pr-gates.sh --renovate-only --files-file "$t/files" --meta-file "$t/meta"
 printf '[]' > "$t/commits"; printf 'go.mod\n' > "$t/files";        expect 1 "renovate-only: no commits is not Renovate" ronly
+commits bot@renovateapp.com; sed -i.bak 's/]$/, 5]/' "$t/commits"; expect 1 "renovate-only: malformed commit after a Renovate one is not Renovate" ronly
+commits bot@renovateapp.com; mkdir -p "$t/files.d"
+expect 1 "renovate-only: unreadable file list is not Renovate" scripts/check-pr-gates.sh --renovate-only --files-file "$t/files.d" --meta-file "$t/meta" --commits-file "$t/commits"
+expect 2 "renovate-only: option without a value is an input error" scripts/check-pr-gates.sh --renovate-only --files-file
 
 # --- check-pr-hygiene.sh -----------------------------------------------------
 # Fixtures are assembled at runtime so this file's own diff stays clean under

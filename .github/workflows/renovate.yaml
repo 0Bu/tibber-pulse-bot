@@ -13,9 +13,10 @@ on:
     types: [completed]
     branches: ['renovate/**']
 # One run at a time; a burst of triggers collapses into one queued run that
-# still sees the latest check results.
+# still sees the latest check results. Fork-triggered workflow_run events (their
+# job is skipped below) get their own group, so they cannot displace that run.
 concurrency:
-  group: renovate
+  group: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name != github.repository && format('renovate-ignored-{0}', github.run_id) || 'renovate' }}
   cancel-in-progress: false
 permissions:
   contents: read
@@ -54,10 +55,14 @@ jobs:
           RENOVATE_CONFIG_MIGRATION: true
           RENOVATE_AUTOMERGE: true
           RENOVATE_BUMP_VERSION: patch
-          # Wait for the status checks (test/helm/vuln/build, plus the gates job
+          # Wait for the status checks (test/helm/build, plus the gates job
           # that a verified Renovate update passes without review records)
           # before automerging, so a failing dependency bump is never merged.
           RENOVATE_IGNORE_TESTS: false
+          # Renovate merges itself, re-run by the workflow_run trigger. GitHub's
+          # native auto-merge would wait only for the ruleset's required checks
+          # (test, gates), not for helm and the docker build.
+          RENOVATE_PLATFORM_AUTOMERGE: false
           # 'auto' lets Renovate refresh/rebase its PR branches so they pick up
           # the latest target version and re-run required checks. 'never' froze
           # PRs (no version bump, no check re-run), which blocked automerge.

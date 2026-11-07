@@ -23,7 +23,11 @@ set -uo pipefail
 body_file="" head_sha="" files_file="" meta_file="" commits_file="" renovate_only=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --renovate-only) renovate_only=1; shift ;;
+    --renovate-only) renovate_only=1; shift; continue ;;
+    --body-file|--head-sha|--files-file|--meta-file|--commits-file)
+      [ $# -ge 2 ] || { echo "check-pr-gates: $1 needs a value" >&2; exit 2; } ;;
+  esac
+  case "$1" in
     --body-file) body_file="$2"; shift 2 ;;
     --head-sha) head_sha="$2"; shift 2 ;;
     --files-file) files_file="$2"; shift 2 ;;
@@ -52,16 +56,25 @@ fi
 # push access; that residual risk is accepted for a single-maintainer repo.
 RENOVATE_EMAIL="bot@renovateapp.com"
 RENOVATE_FILES='^(Dockerfile|go\.mod|go\.sum|docker-compose\.yml|README\.md|AGENTS\.md|CLAUDE\.md|chart/Chart\.yaml|chart/values\.yaml|\.github/workflows/[A-Za-z0-9._-]+\.ya?ml)$'
+# Every parse or read error must end in a reason: an empty reason means exempt.
 renovate_reason() {  # prints why the PR is NOT a Renovate version update; empty if it is
-  local same_repo ref authors
+  local same_repo ref emails authors
   [ -n "$meta_file" ] && [ -n "$commits_file" ] || { echo "no PR metadata"; return; }
   same_repo=$(jq -r '(.head.repo.full_name // "") == (.base.repo.full_name // "-")' "$meta_file" 2>/dev/null)
   ref=$(jq -r '.head.ref // ""' "$meta_file" 2>/dev/null)
-  authors=$(jq -r '.[].commit | .author.email, .committer.email' "$commits_file" 2>/dev/null | sort -u)
+  # jq prints the elements it parsed before failing on a later one.
+  emails=$(jq -r '.[].commit | .author.email, .committer.email' "$commits_file" 2>/dev/null) \
+    || { echo "unreadable commit list"; return; }
+  authors=$(sort -u <<<"$emails")
   [ "$same_repo" = true ] || { echo "head is not a branch of this repository"; return; }
   [[ "$ref" == renovate/* ]] || { echo "branch $ref is not renovate/*"; return; }
   [ "$authors" = "$RENOVATE_EMAIL" ] || { echo "a commit is not authored and committed by $RENOVATE_EMAIL"; return; }
-  ! grep -vqE "$RENOVATE_FILES" "$files_file" || { echo "the diff touches files Renovate does not manage"; return; }
+  grep -vqE "$RENOVATE_FILES" "$files_file"
+  case $? in
+    1) ;;
+    0) echo "the diff touches files Renovate does not manage" ;;
+    *) echo "unreadable file list" ;;
+  esac
 }
 reason=$(renovate_reason)
 if [ "$renovate_only" -eq 1 ]; then

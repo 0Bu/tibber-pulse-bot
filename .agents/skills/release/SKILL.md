@@ -42,8 +42,9 @@ git fetch --tags origin && git tag --list 'v*' | sort -V | tail -3
 ```
 
 Confirm the Renovate PR lands with the new version + digest. Renovate re-runs
-when the checks on its branch finish and automerges it; only merge it by hand
-if it is stuck (e.g. a red test).
+when the checks on its branch finish and automerges it. If it does not land,
+find out why: a red check means the update breaks something, so fix that in
+its own PR or close the update, but never merge a red Renovate PR by hand.
 Consumers pin the immutable digest `:X.Y.Z@sha256:<digest>`.
 
 ## Manual override — minor / major bump

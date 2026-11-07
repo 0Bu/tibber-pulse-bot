@@ -16,8 +16,11 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, edited, ready_for_review]
 
+# Renovate heads get one group per run: Renovate force-pushes and edits its PR
+# in the same second, and a cancelled `gates` check run stays on that commit,
+# which Renovate never treats as green, so the update would never automerge.
 concurrency:
-  group: pr-policy-${{ github.event.pull_request.number }}
+  group: pr-policy-${{ github.event.pull_request.number }}${{ startsWith(github.event.pull_request.head.ref, 'renovate/') && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -60,6 +63,9 @@ jobs:
             || { echo "::error::partial changed-file list"; exit 1; }
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR/commits?per_page=100" \
             | jq 'add' > "$d/commits.json"
+          # The endpoint stops at 250 commits; authorship and hygiene must see all.
+          [ "$(jq 'length' "$d/commits.json")" -eq "$(jq -r '.commits' "$d/pr.json")" ] \
+            || { echo "::error::partial commit list"; exit 1; }
           { jq -r '.title, (.body // "")' "$d/pr.json"; jq -r '.[].commit.message' "$d/commits.json"; } > "$d/text.txt"
           : > "$d/diff.txt"
           for sha in $(jq -r '.[].sha' "$d/commits.json"); do
@@ -73,10 +79,11 @@ jobs:
 
       # Same repo, renovate/* branch, every commit authored AND committed by the
       # Renovate identity, only Renovate-managed files (check-pr-gates.sh). Such
-      # a PR needs no review records, and its body is upstream release notes
-      # that the hygiene check must not judge; test/helm/vuln/build decide and
-      # Renovate automerges once they are green. Bad input (exit 2) is treated
-      # as "not Renovate", so the normal gates below fail closed.
+      # a PR needs no review records, and the hygiene check has nothing to
+      # judge but upstream release notes in its body and Renovate's own version
+      # strings; test/helm/build decide and Renovate automerges once they are
+      # green. Bad input (exit 2) is treated as "not Renovate", so the normal
+      # gates below fail closed.
       - name: Renovate version update
         id: renovate
         run: |
