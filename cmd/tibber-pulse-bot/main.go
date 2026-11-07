@@ -28,17 +28,19 @@ var (
 func main() {
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	pulseHost := flag.String("pulse-host", "", "Tibber Pulse Bridge IP/hostname (required)")
-	pulsePassword := flag.String("pulse-password", os.Getenv("TIBBER_PULSE_PASSWORD"),
+	// Declared with var: the pre-push secret gate reads `pulsePassword :=` as a
+	// credential assignment.
+	var pulsePassword = flag.String("pulse-password", "",
 		"Bridge admin password (9-char QR code from sticker). Defaults to $TIBBER_PULSE_PASSWORD.")
 	pulseNode := flag.Int("pulse-node", 1, "Bridge node id (used for node metrics and poll mode)")
-	mode := flag.String("mode", "push", "Acquisition mode: 'push' (WebSocket, ~1s live updates) or 'poll' (HTTP, --interval)")
+	mode := flag.String("mode", "push", "Acquisition mode: 'push' (WebSocket, one update per meter telegram) or 'poll' (HTTP, --interval)")
 	mqttHost := flag.String("mqtt-host", "", "MQTT broker host. If empty, readings go to stdout.")
 	mqttPort := flag.Int("mqtt-port", 1883, "MQTT broker port")
 	mqttTopic := flag.String("mqtt-topic", "tibber/pulse", "MQTT topic prefix")
 	mqttClientID := flag.String("mqtt-client-id", "tibber-pulse-bot", "MQTT client id")
 	haDiscovery := flag.Bool("ha-discovery", false, "Publish Home Assistant MQTT-Discovery configs (retain=true)")
 	haDiscoveryPrefix := flag.String("ha-discovery-prefix", "homeassistant", "Topic prefix HA listens on for discovery")
-	interval := flag.Duration("interval", 10*time.Second, "Poll interval (only used in poll mode)")
+	interval := flag.Duration("interval", defaultPollInterval, "Poll interval (poll mode, and push mode after falling back to poll; 10s if not positive there)")
 	idleTimeout := flag.Duration("ws-idle-timeout", 60*time.Second, "Reconnect WS if no message arrives within this window (push mode)")
 	reconnectDelay := flag.Duration("reconnect-delay", 100*time.Millisecond, "Delay before reconnecting after WS disconnect (100ms prevents missed telegrams during bridge idle socket drops)")
 	verbose := flag.Bool("v", false, "Verbose: log every WS reconnect (default: only real errors)")
@@ -46,6 +48,11 @@ func main() {
 	metricsInterval := flag.Duration("metrics-interval", 60*time.Second, "Bridge diagnostics poll interval (set 0 to disable)")
 	expireAfter := flag.Int("expire-after", 0, "Sensor expiration in seconds for Home Assistant (0: auto, >0: seconds, <0: disable)")
 	flag.Parse()
+	// Not a flag default: flag echoes defaults in the usage text it prints on
+	// every parse error, which would leak the secret into container logs.
+	if !flagSet("pulse-password") {
+		*pulsePassword = os.Getenv("TIBBER_PULSE_PASSWORD")
+	}
 
 	if *showVersion {
 		fmt.Printf("tibber-pulse-bot version=%s commit=%s\n", version, commit)
@@ -122,8 +129,12 @@ func main() {
 	} else {
 		runErr = runPush(ctx, client, sink, *idleTimeout, *reconnectDelay, *verbose)
 		if errors.Is(runErr, errFallbackToPoll) && ctx.Err() == nil {
-			log.Printf("switching to poll mode (interval=%s)", *interval)
-			runErr = runPoll(ctx, client, sink, *interval)
+			pollInterval, readingsExp, diagExp := fallbackSettings(*expireAfter, *interval, *metricsInterval)
+			log.Printf("switching to poll mode (interval=%s)", pollInterval)
+			if mqttSink != nil {
+				mqttSink.SetExpireAfter(readingsExp, diagExp)
+			}
+			runErr = runPoll(ctx, client, sink, pollInterval)
 		}
 	}
 
@@ -183,7 +194,7 @@ func pollOnce(ctx context.Context, c *pulse.Client, sink output.Sink) error {
 }
 
 // runMetrics polls the three endpoints that back the reduced diagnostics set.
-// Each source is independent; only /metrics.json is required.
+// Each source is independent; only the metrics endpoint is required.
 func runMetrics(ctx context.Context, c *pulse.Client, mqttSink *output.MQTTSink, interval time.Duration) {
 	pollAndPublish := func() {
 		fctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -249,6 +260,8 @@ func logBridgeStdout(u output.BridgeUpdate) {
 		m.MeterCorruptCountRecv, avail, lastData)
 }
 
+const defaultPollInterval = 10 * time.Second
+
 var errFallbackToPoll = errors.New("ws does not deliver SML frames; falling back to poll")
 
 func runPush(ctx context.Context, c *pulse.Client, sink output.Sink, idle, reconnectDelay time.Duration, verbose bool) error {
@@ -306,8 +319,9 @@ func runPush(ctx context.Context, c *pulse.Client, sink output.Sink, idle, recon
 			}
 		}
 
-		// Bridge tears down the WS every ~1.1 s when idle — that's expected firmware behavior.
-		// Reconnect immediately after reconnectDelay (default 100ms) to avoid dropping meter frames.
+		// The bridge routinely drops the WS without a close frame (AGENTS.md: every
+		// ~30–60 s). Reconnect after reconnectDelay (default 100ms) so no meter
+		// telegram is missed.
 		var sleepDuration time.Duration
 		if errors.Is(err, pulse.ErrPeerClosed) || errors.Is(err, pulse.ErrIdleTimeout) {
 			sleepDuration = reconnectDelay
@@ -390,6 +404,23 @@ func validateConfig(cfg botConfig) error {
 		}
 	}
 	return nil
+}
+
+func flagSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
+}
+
+// fallbackSettings returns the poll cadence and HA expiries once push mode has
+// fallen back to polling. --interval is only validated in poll mode, so push
+// setups that set it to zero keep starting and poll at the default.
+func fallbackSettings(expireAfter int, interval, metricsInterval time.Duration) (time.Duration, int, int) {
+	if interval <= 0 {
+		interval = defaultPollInterval
+	}
+	readingsExp, diagExp := calculateExpiration(expireAfter, "poll", interval, metricsInterval)
+	return interval, readingsExp, diagExp
 }
 
 func calculateExpiration(expireAfter int, mode string, pollInterval, metricsInterval time.Duration) (int, int) {

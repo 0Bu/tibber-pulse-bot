@@ -41,7 +41,8 @@ if [ -z "$text_file$diff_file" ]; then
   : > "$tmp/diff"
   while IFS= read -r commit; do
     git diff-tree --root -m --no-renames -p "$commit" > "$tmp/patch" || exit 2
-    sed -n '/^+[^+]/s/^+//p' "$tmp/patch" >> "$tmp/diff"
+    # Skip only the file header, not added lines that start with "+".
+    awk '/^diff --git /{h=1; next} /^@@/{h=0; next} !h && /^\+/{print substr($0, 2)}' "$tmp/patch" >> "$tmp/diff"
   done < "$tmp/commits"
   text_file="$tmp/text" diff_file="$tmp/diff"
   echo "check-pr-hygiene: local mode — commits $mb..HEAD and their diff (PR text is checked in CI)"
@@ -54,11 +55,12 @@ grep -viE '^(Co-Authored-By|Signed-off-by|Reviewed-by|Claude-Session):' "$text_f
 cat "$tmp/prose" "$diff_file" > "$tmp/all"
 
 found=0
+# grep -a: a patch GNU grep deems binary would otherwise print no matches.
 report() {  # label, file, ERE, [exclude ERE]
   local hits rc
-  hits=$(grep -noE -e "$3" "$2"); rc=$?
+  hits=$(grep -anoE -e "$3" "$2"); rc=$?
   [ "$rc" -eq 2 ] && { echo "check-pr-hygiene: bad pattern for $1" >&2; exit 2; }
-  [ -n "${4:-}" ] && hits=$(grep -vE -e "$4" <<<"$hits")
+  [ -n "${4:-}" ] && hits=$(grep -avE -e "$4" <<<"$hits")
   hits=$(head -5 <<<"$hits")
   [ -n "$hits" ] || return 0
   found=1
@@ -76,7 +78,7 @@ report "private key" "$tmp/all" '-----BEGIN [A-Z ]*PRIVATE KEY-----'
 report "access token" "$tmp/all" '(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})'
 # Sticker codes are 4-4 uppercase alphanumerics mixing letters and digits;
 # the documented placeholder XXXX-XXXX has no digit, so it never matches.
-pw=$(grep -noE '\b[A-Z0-9]{4}-[A-Z0-9]{4}\b' "$tmp/all" | awk -F: '$2 ~ /[A-Z]/ && $2 ~ /[0-9]/' | head -5)
+pw=$(grep -anoE '\b[A-Z0-9]{4}-[A-Z0-9]{4}\b' "$tmp/all" | awk -F: '$2 ~ /[A-Z]/ && $2 ~ /[0-9]/' | head -5)
 if [ -n "$pw" ]; then
   found=1
   echo "FINDING  bridge-password-shaped token (rotate the bridge password if it is real):"

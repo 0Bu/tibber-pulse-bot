@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -296,6 +298,14 @@ func TestValidateConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("push mode tolerates a non-positive interval", func(t *testing.T) {
+		c := valid
+		c.interval = 0
+		if err := validateConfig(c); err != nil {
+			t.Errorf("push mode only polls after a fallback, which uses fallbackSettings: %v", err)
+		}
+	})
+
 	t.Run("negative idleTimeout fails", func(t *testing.T) {
 		c := valid
 		c.idleTimeout = -1 * time.Second
@@ -400,6 +410,15 @@ func TestCalculateExpiration(t *testing.T) {
 			wantDiag:        180,
 		},
 		{
+			name:            "poll mode slow interval",
+			expireAfter:     0,
+			mode:            "poll",
+			pollInterval:    60 * time.Second,
+			metricsInterval: 60 * time.Second,
+			wantReadings:    180,
+			wantDiag:        180,
+		},
+		{
 			name:            "explicit positive expireAfter",
 			expireAfter:     45,
 			mode:            "push",
@@ -445,6 +464,89 @@ func TestCalculateExpiration(t *testing.T) {
 			}
 			if gotD != tt.wantDiag {
 				t.Errorf("diagExpire = %d, want %d", gotD, tt.wantDiag)
+			}
+		})
+	}
+}
+
+// TestMainSubprocess runs main() with the arguments in $TPB_MAIN_ARGS; it is
+// only meaningful when started by runMain.
+func TestMainSubprocess(t *testing.T) {
+	args, ok := os.LookupEnv("TPB_MAIN_ARGS")
+	if !ok {
+		t.Skip("helper for runMain")
+	}
+	os.Args = append([]string{"tibber-pulse-bot"}, strings.Split(args, "\n")...)
+	main()
+}
+
+// runMain re-executes the test binary so main() can exit without ending the
+// test run. Only env is passed, so no developer bridge or broker is reached.
+func runMain(t *testing.T, env []string, args ...string) (string, int) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMainSubprocess$")
+	cmd.Env = append([]string{"TPB_MAIN_ARGS=" + strings.Join(args, "\n")}, env...)
+	if dir, ok := os.LookupEnv("GOCOVERDIR"); ok {
+		cmd.Env = append(cmd.Env, "GOCOVERDIR="+dir)
+	}
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return string(out), exitErr.ExitCode()
+	}
+	if err != nil {
+		t.Fatalf("run main: %v", err)
+	}
+	return string(out), 0
+}
+
+func TestPulsePasswordFlag(t *testing.T) {
+	env := []string{"TIBBER_PULSE_PASSWORD=dummy-9char"}
+
+	t.Run("usage on parse error does not echo the env password", func(t *testing.T) {
+		out, code := runMain(t, env, "--no-such-flag")
+		if code != 2 || !strings.Contains(out, "-pulse-password") {
+			t.Fatalf("want flag usage and exit 2, got exit %d:\n%s", code, out)
+		}
+		if strings.Contains(out, "dummy-9char") {
+			t.Fatalf("usage output echoes $TIBBER_PULSE_PASSWORD:\n%s", out)
+		}
+	})
+
+	t.Run("env password is used when the flag is absent", func(t *testing.T) {
+		out, code := runMain(t, env, "--pulse-host=192.0.2.1", "--mode=bogus")
+		if code != 1 || !strings.Contains(out, "--mode must be") {
+			t.Fatalf("want the --mode error after the password check passed, got exit %d:\n%s", code, out)
+		}
+	})
+
+	t.Run("explicit empty flag overrides the env password", func(t *testing.T) {
+		out, code := runMain(t, env, "--pulse-host=192.0.2.1", "--pulse-password=")
+		if code != 1 || !strings.Contains(out, "--pulse-password (or $TIBBER_PULSE_PASSWORD) is required") {
+			t.Fatalf("want the missing-password error, got exit %d:\n%s", code, out)
+		}
+	})
+}
+
+func TestFallbackSettings(t *testing.T) {
+	tests := []struct {
+		name                  string
+		expireAfter           int
+		interval              time.Duration
+		wantInterval          time.Duration
+		wantReadings, wantDia int
+	}{
+		{"zero interval polls at the default", 0, 0, defaultPollInterval, 30, 180},
+		{"negative interval polls at the default", 0, -time.Second, defaultPollInterval, 30, 180},
+		{"slow poll widens readings and diagnostics", 0, 120 * time.Second, 120 * time.Second, 360, 360},
+		{"explicit expiry is kept", 45, 120 * time.Second, 120 * time.Second, 45, 180},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotI, gotR, gotD := fallbackSettings(tt.expireAfter, tt.interval, 60*time.Second)
+			if gotI != tt.wantInterval || gotR != tt.wantReadings || gotD != tt.wantDia {
+				t.Errorf("fallbackSettings = (%s, %d, %d), want (%s, %d, %d)",
+					gotI, gotR, gotD, tt.wantInterval, tt.wantReadings, tt.wantDia)
 			}
 		})
 	}

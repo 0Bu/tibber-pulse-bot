@@ -202,7 +202,7 @@ the HTTP data endpoint works. The log then shows `switching to poll mode`.
 | `--pulse-password` | `$TIBBER_PULSE_PASSWORD` | Bridge admin password |
 | `--pulse-node` | `1` | Bridge node id (node metrics & poll mode) |
 | `--mode` | `push` | `push` (WebSocket) or `poll` (HTTP) |
-| `--interval` | `10s` | Poll interval (poll mode) |
+| `--interval` | `10s` | Poll interval (poll mode, and push mode after its automatic fallback to poll; must be positive in poll mode, push falls back with `10s` if it is not) |
 | `--ws-idle-timeout` | `60s` | Reconnect WS if no message arrives |
 | `--reconnect-delay` | `100ms` | Delay before reconnecting after WS drop (100ms avoids dropped telegrams) |
 | `--mqtt-host` | (empty → stdout) | MQTT broker host |
@@ -214,7 +214,7 @@ the HTTP data endpoint works. The log then shows `switching to poll mode`.
 | `--ha-discovery` | `false` | Publish Home Assistant MQTT-Discovery configs |
 | `--ha-discovery-prefix` | `homeassistant` | HA discovery topic prefix |
 | `--metrics-interval` | `60s` | Bridge diagnostics poll cadence; `0` disables |
-| `--expire-after` | `0` (auto) | HA `expire_after` in seconds: `0` = auto (30 s push, `max(30, 3×--interval)` poll; diagnostics `3×--metrics-interval`), `>0` = fixed, `<0` = disabled |
+| `--expire-after` | `0` (auto) | HA `expire_after` in seconds for readings: `0` = auto (30 s push, `max(30, 3×--interval)` poll, and after a push→poll fallback), `>0` = that value, `<0` = disabled (readings and diagnostics). Diagnostics get `max(3×--metrics-interval, readings value)` |
 | `--version` | `false` | Print version and exit |
 
 ## MQTT topics
@@ -243,6 +243,7 @@ Known OBIS values use these JSON field names:
 
 - `power_total`, `power_l1` / `l2` / `l3` — current active power [W]
 - `energy_import_total`, `energy_export_total` — total energy [Wh]
+- `energy_import_t1` / `t2`, `energy_export_t1` / `t2` — per-tariff energy [Wh]
 - `voltage_l1` / `l2` / `l3`, `current_l1` / `l2` / `l3`, `frequency`
 - `manufacturer` — 3-letter ASCII (e.g. `LGZ`)
 - `meter_serial` — `<manufacturer>-<serial>` (e.g. `LGZ-81199038`)
@@ -262,7 +263,7 @@ is deliberately limited to the values needed to recognize a bridge, meter
 link, or WiFi problem:
 
 | JSON field | Meaning |
-|---|---|---|
+|---|---|
 | `bridge_available` | Pulse node reachable |
 | `last_data_age` | Seconds since the last meter telegram |
 | `meter_link_rssi` | Meter-to-bridge radio signal [dBm] |

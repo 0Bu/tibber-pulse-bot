@@ -1,5 +1,7 @@
 tibber-pulse-bot
 .git
+.env
+.env.*
 *.md
 Dockerfile
 .dockerignore
