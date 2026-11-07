@@ -5,11 +5,27 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # Renovate only automerges while it runs. Running again whenever a check
+  # workflow finishes on one of its branches lets a version update merge
+  # minutes after its tests turn green, not at the next scheduled run.
+  workflow_run:
+    workflows: [test, docker, pr-policy]
+    types: [completed]
+    branches: ['renovate/**']
+# One run at a time; a burst of triggers collapses into one queued run that
+# still sees the latest check results. Fork-triggered workflow_run events (their
+# job is skipped below) get their own group, so they cannot displace that run.
+concurrency:
+  group: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name != github.repository && format('renovate-ignored-{0}', github.run_id) || 'renovate' }}
+  cancel-in-progress: false
 permissions:
   contents: read
   pull-requests: write
 jobs:
   renovate:
+    # A fork PR can name its branch renovate/*; only this repository's
+    # branches belong to Renovate. Nothing from the triggering run is used.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: renovatebot/github-action@1c0cf989c02653fba0efe7ca5772338860ca71dc # v46.3.12
@@ -39,9 +55,14 @@ jobs:
           RENOVATE_CONFIG_MIGRATION: true
           RENOVATE_AUTOMERGE: true
           RENOVATE_BUMP_VERSION: patch
-          # Wait for required status checks (vuln/test/build) before automerging
-          # so a failing dependency bump is never merged automatically.
+          # Wait for the status checks (test/helm/build, plus the gates job
+          # that a verified Renovate update passes without review records)
+          # before automerging, so a failing dependency bump is never merged.
           RENOVATE_IGNORE_TESTS: false
+          # Renovate merges itself, re-run by the workflow_run trigger. GitHub's
+          # native auto-merge would wait only for the ruleset's required checks
+          # (test, gates), not for helm and the docker build.
+          RENOVATE_PLATFORM_AUTOMERGE: false
           # 'auto' lets Renovate refresh/rebase its PR branches so they pick up
           # the latest target version and re-run required checks. 'never' froze
           # PRs (no version bump, no check re-run), which blocked automerge.

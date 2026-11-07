@@ -29,18 +29,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  vuln:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
-        with:
-          go-version-file: go.mod
-          go-package: ./...
-          repo-checkout: false
-
+  # One job, so its check run exists from the moment the workflow starts. A
+  # separate `vuln` job made `build` (needs: vuln) appear only after the scan,
+  # and Renovate could see every existing check green and automerge before
+  # the image had been built.
   build:
-    needs: [vuln]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -50,6 +43,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Runs before anything is built or pushed: a known vulnerability stops
+      # the release here.
+      - name: Vulnerability scan
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          go-version-file: go.mod
+          go-package: ./...
+          repo-checkout: false
 
       # No QEMU: the Dockerfile cross-compiles the static Go binary on the
       # native build platform, so no foreign-arch emulation is needed.
