@@ -19,7 +19,7 @@ The two pieces of secret/host info — bridge IP and bridge password — must be
 supplied at install time. There is no committed default for either.
 
 There are three mutually exclusive ways to supply the bridge password —
-the chart fails the install if none is set.
+the chart fails the install if none or more than one is set.
 
 ### Inline password (quick / dev)
 
@@ -77,7 +77,7 @@ kubectl create secret generic tibber-pulse \
   --from-literal=TIBBER_PULSE_PASSWORD=XXXX-XXXX
 ```
 
-Then point the chart at it — the password value in `values.yaml` is ignored:
+Then point the chart at it and leave `pulse.password` empty — setting both fails the install:
 
 ```bash
 helm install tibber-pulse-bot ./chart \
@@ -93,7 +93,7 @@ Top-level keys in `values.yaml`:
 | Key | Default | Description |
 |---|---|---|
 | `image.repository` | `ghcr.io/0bu/tibber-pulse-bot` | Container image |
-| `image.tag` | chart `appVersion` | Tag override |
+| `image.tag` | pinned `<appVersion>@sha256:<digest>` | Image tag; cleared, it falls back to chart `appVersion` |
 | `image.pullPolicy` | `IfNotPresent` | Kubernetes image pull policy |
 | `pulse.host` | `""` (required) | Bridge IP / hostname |
 | `pulse.node` | `1` | Bridge node id |
@@ -106,14 +106,14 @@ Top-level keys in `values.yaml`:
 | `mqtt.topic` | `tibber/pulse` | Topic prefix |
 | `mqtt.clientID` | `tibber-pulse-bot` | MQTT client id |
 | `mode` | `push` | `push` (WebSocket) or `poll` (HTTP) |
-| `pollInterval` | `10s` | Poll cadence (poll mode only) |
+| `pollInterval` | `10s` | Poll cadence (poll mode, and push mode after its automatic fallback to poll) |
 | `wsIdleTimeout` | `60s` | Reconnect WS if no message arrives |
 | `reconnectDelay` | `100ms` | Delay before reconnecting after WS drop |
 | `quiet` | `false` | Suppress per-update stdout one-liner |
 | `verbose` | `false` | Verbose logging: log every WS reconnect |
 | `homeAssistant.discovery` | `false` | Publish HA MQTT-Discovery configs |
 | `homeAssistant.discoveryPrefix` | `homeassistant` | HA discovery topic prefix |
-| `homeAssistant.expireAfter` | `0` | HA `expire_after` seconds: `0` = auto, `>0` = fixed, `<0` = disabled |
+| `homeAssistant.expireAfter` | `0` | HA `expire_after` seconds for readings: `0` = auto (30 s push, `max(30, 3×pollInterval)` poll and after a push→poll fallback), `>0` = that value, `<0` = disabled; diagnostics get `max(3×metricsInterval, readings value)` |
 | `metricsInterval` | `60s` | Reduced bridge diagnostics JSON cadence; `0` disables |
 | `replicaCount` | `1` | Deployment replica count |
 | `resources` | 10m / 16Mi req, 64Mi limit | Container resource requests/limits |
@@ -149,9 +149,10 @@ kubectl run -it --rm mqtt-sub --image=eclipse-mosquitto --restart=Never -- \
   mosquitto_sub -h mosquitto -t 'tibber/pulse/#' -v
 ```
 
-The subscription shows only two state topics: `tibber/pulse/readings` with
+The subscription shows two state topics, `tibber/pulse/readings` with
 one JSON object per SML telegram and `tibber/pulse/diagnostics` with the
-reduced bridge-health JSON. With Home Assistant discovery enabled, both the
+reduced bridge-health JSON, plus the retained availability topic
+`tibber/pulse/status` (`online`/`offline`). With Home Assistant discovery enabled, both the
 measurement and diagnostic entities belong to the same meter device; the
 diagnostics appear in its Diagnostics section.
 

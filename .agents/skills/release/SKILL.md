@@ -13,8 +13,10 @@ Releases are **automated** — for the normal case you do not tag by hand (see
 ## The automated flow (normal patch release)
 
 1. Merge a code change to `main`. `release.yml` triggers on pushes that touch
-   `**.go`, `go.mod`, `go.sum`, or `Dockerfile` — doc / chart / workflow-only
-   changes do **not** release.
+   `**.go` (except `*_test.go` and `cmd/sml-inspect/**`, which are not in the
+   image), `go.mod`, `go.sum`, or `Dockerfile` — doc / chart / workflow / test-only
+   changes do **not** release. Runs are serialized (`concurrency: release`), so
+   two close merges get consecutive tags.
 2. `release.yml` reads the latest `vX.Y.Z` tag, bumps the **patch**
    (`X.Y.(Z+1)`, or `v0.1.0` if no tag exists yet), and pushes that tag as
    `github-actions[bot]`.

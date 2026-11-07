@@ -77,7 +77,7 @@ This document defines architecture, protocols, coding invariants, verification p
 - **With `--mqtt-host`**: A Tee sink writes a one-line compact summary per update on stdout in addition to MQTT publishing:
   `HH:MM:SS P=...W Eimp=...Wh Eexp=...Wh ...` — exactly one log event per telegram, no ANSI escape sequences, no in-place carriage-return overwriting.
   **Reason**: In containers (`docker logs`, `kubectl logs`), line-based logs preserve clean searchability; ANSI escapes corrupt log aggregators.
-- `--quiet`: Suppresses per-update log lines entirely (only startup information and errors are logged).
+- `--quiet`: With `--mqtt-host`, suppresses per-update log lines entirely (only startup information and errors are logged).
 - `-v`: Verbose logging (includes routine WebSocket reconnect notices).
 
 ---
@@ -231,7 +231,7 @@ This repository uses an open, vendor-independent agent setup adhering to univers
 
 ### Safety Gates & Hook Architecture (`scripts/`)
 
-- `scripts/install-hooks.sh`: Installs git safety hooks (`pre-push`, `pre-commit`, `pre-merge-commit`) respecting `core.hooksPath` and chaining existing executable hooks with the same arguments and pre-push input.
+- `scripts/install-hooks.sh`: Installs git safety hooks (`pre-push`, `pre-commit`, `pre-merge-commit`) respecting a repository-local `core.hooksPath` (it refuses a global or system one, whose other repositories would run this clone's wrappers) and chaining existing executable hooks with the same arguments and pre-push input.
 - `scripts/pre-push-secret-gate.sh`: Checks the actual pushed refs and every outgoing commit, including root and merge commits. Blocks `.env`/`.env.*` (except `.env.example`), key files, credential assignments and hygiene findings. `--scan` also checks staged, working and non-ignored untracked changes. Unavailable objects fail closed; fetch the remote before retrying.
 - `scripts/pre-merge-review-gate.sh`: Checks live PR metadata and review stamps, including the current connector argument schema. Local approval requires `--approve-local <incoming-commit>`; the marker must match that incoming commit. Native hooks also check commits made after `git merge --no-commit`.
 - `scripts/hook-command.sh`: Shared shell-command tokenizer for the agent push and merge gates; preserves quoted paths and checks each command in a chain without evaluating shell input.

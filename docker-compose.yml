@@ -6,6 +6,11 @@ services:
     image: ghcr.io/0bu/tibber-pulse-bot:1.0.45@sha256:044fc28deafcf84a708ba81f508d344d3a25e60c8ad4af9da7a9314a5ce3795f
     container_name: tibber-pulse-bot
     restart: unless-stopped
+    # Same hardening as the Helm chart (AGENTS.md > Container Security).
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     environment:
       TIBBER_PULSE_PASSWORD: ${TIBBER_PULSE_PASSWORD:?set TIBBER_PULSE_PASSWORD in .env}
     command:

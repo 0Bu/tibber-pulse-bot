@@ -3,8 +3,13 @@ name: release
 on:
   push:
     branches: [main]
+    # Only what ends up in the image: tests and the sml-inspect CLI are not
+    # built by the Dockerfile, so changing only them would re-release an
+    # identical image.
     paths:
       - '**.go'
+      - '!**_test.go'
+      - '!cmd/sml-inspect/**'
       - 'go.mod'
       - 'go.sum'
       - 'Dockerfile'
@@ -12,6 +17,12 @@ on:
 permissions:
   contents: write
   actions: write
+
+# Two close merges would otherwise both compute the same next tag; the second
+# push fails and the newer commit is never released.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   tag:

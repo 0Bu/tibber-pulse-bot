@@ -49,8 +49,12 @@ jobs:
           [ "$head" = "$EVENT_HEAD_SHA" ] || { echo "::error::event head $EVENT_HEAD_SHA is stale; PR head is $head"; exit 1; }
           echo "$head" > "$d/head"
           jq -r '.body // ""' "$d/pr.json" > "$d/body.md"
+          # A rename counts under both paths for gate selection: moving a file
+          # out of chart/ or internal/pulse/ still needs that path's review.
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" \
-            --jq '.[].filename' > "$d/files.txt"
+            --jq '.[] | [.filename, .previous_filename // empty] | join("\t")' > "$d/files.tsv"
+          cut -f1 "$d/files.tsv" > "$d/files.txt"
+          tr '\t' '\n' < "$d/files.tsv" > "$d/gate-files.txt"
           [ "$(wc -l < "$d/files.txt")" -eq "$(jq -r '.changed_files' "$d/pr.json")" ] \
             || { echo "::error::partial changed-file list"; exit 1; }
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR/commits?per_page=100" \
@@ -61,14 +65,16 @@ jobs:
             # A failed fetch must fail the job: skipping a commit would let the
             # secret scan pass on an incomplete diff.
             patch=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.files[].patch // empty')
-            { grep -E '^\+([^+]|$)' <<<"$patch" || true; } | cut -c2- >> "$d/diff.txt"
+            # API patches have no "+++" file header, so every "+" line is added
+            # content (including lines that themselves start with "+").
+            { grep -a '^+' <<<"$patch" || true; } | cut -c2- >> "$d/diff.txt"
           done
 
       - name: Review gates recorded for the current head
         run: |
           d="$RUNNER_TEMP/pr"
           scripts/check-pr-gates.sh --body-file "$d/body.md" --head-sha "$(cat "$d/head")" \
-            --files-file "$d/files.txt" --meta-file "$d/pr.json" --commits-file "$d/commits.json"
+            --files-file "$d/gate-files.txt" --meta-file "$d/pr.json" --commits-file "$d/commits.json"
 
       - name: PR hygiene (personal data, secrets, English)
         if: ${{ !cancelled() }}

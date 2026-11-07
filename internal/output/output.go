@@ -52,7 +52,7 @@ func (s *StdoutSink) Close() {}
 // --- compact one-line stdout sink ---------------------------------------
 
 // CompactStdoutSink prints one line per publish, container-log friendly.
-// Format: "<timestamp>  power=3.000W import=2423174.800Wh export=253615.500Wh"
+// Format: "15:04:05 P=3.000W Eimp=2423174.800Wh Eexp=253615.500Wh"
 type CompactStdoutSink struct {
 	w    io.Writer
 	keys []string // ordered list of names to include; others are dropped
@@ -193,21 +193,24 @@ func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix s
 		SetWill(availabilityTopic, "offline", 1, true).
 		SetOnConnectHandler(func(client mqtt.Client) {
 			m.mu.Lock()
-			m.readingsDiscovered = map[string]bool{}
-			m.diagnosticsDiscovered = map[string]bool{}
+			m.markForReannounce()
 			m.mu.Unlock()
 			_ = m.publish(availabilityTopic, true, "online")
 		})
 
-	c := mqtt.NewClient(opts)
-	t := c.Connect()
+	// Assign before Connect: paho starts the OnConnect goroutine before the
+	// connect token completes, and that handler publishes through m.client.
+	m.client = mqtt.NewClient(opts)
+	t := m.client.Connect()
 	if !t.WaitTimeout(10 * time.Second) {
+		// Stop a connect that would still complete and publish "online" for a
+		// sink the caller never receives.
+		m.client.Disconnect(0)
 		return nil, fmt.Errorf("mqtt: connect timeout to %s:%d", host, port)
 	}
 	if err := t.Error(); err != nil {
 		return nil, fmt.Errorf("mqtt: connect %s:%d: %w", host, port, err)
 	}
-	m.client = c
 	return m, nil
 }
 
@@ -223,6 +226,31 @@ func (m *MQTTSink) SetBridgeHost(host string) {
 	}
 	m.device.BridgeHost = strings.TrimRight(host, "/")
 	m.mu.Unlock()
+}
+
+// SetExpireAfter changes expire_after of the reading and diagnostic entities,
+// e.g. after push mode fell back to polling, and re-announces them on their
+// next publish so Home Assistant picks up the new values.
+func (m *MQTTSink) SetExpireAfter(readings, diagnostics int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.readingsExpireAfter != readings || m.diagnosticsExpireAfter != diagnostics {
+		m.readingsExpireAfter = readings
+		m.diagnosticsExpireAfter = diagnostics
+		m.markForReannounce()
+	}
+}
+
+// markForReannounce makes every announced entity publish its config again.
+// The names stay in the maps (as false) because they are also the record of
+// which configs to retract when the meter serial changes. Caller holds m.mu.
+func (m *MQTTSink) markForReannounce() {
+	for name := range m.readingsDiscovered {
+		m.readingsDiscovered[name] = false
+	}
+	for name := range m.diagnosticsDiscovered {
+		m.diagnosticsDiscovered[name] = false
+	}
 }
 
 func (m *MQTTSink) Publish(_ context.Context, readings []sml.Reading) error {
@@ -460,11 +488,13 @@ func (m *MQTTSink) announce(name string, spec discovery.SensorSpec, dev discover
 	topic := discovery.ConfigTopic(m.discoveryPrefix, name, spec, dev)
 	var opts discovery.EntityOptions
 	opts.AvailabilityTopic = m.availabilityTopic
+	m.mu.Lock()
 	if stateTopic == m.prefix+"/readings" {
 		opts.ExpireAfter = m.readingsExpireAfter
 	} else if stateTopic == m.prefix+"/diagnostics" {
 		opts.ExpireAfter = m.diagnosticsExpireAfter
 	}
+	m.mu.Unlock()
 	payload, err := discovery.MarshalConfig(discovery.BuildConfig(name, spec, dev, stateTopic, opts))
 	if err != nil {
 		return fmt.Errorf("mqtt: encode discovery %s: %w", name, err)
@@ -572,7 +602,7 @@ func (m *MQTTSink) enumerateRetainedConfigs() (map[string]struct{}, bool) {
 		default:
 		}
 	})
-	if !tok.WaitTimeout(5*time.Second) || tok.Error() != nil {
+	if !tok.WaitTimeout(5*time.Second) || tok.Error() != nil || subscribeRefused(tok, filter) {
 		m.client.Unsubscribe(filter)
 		return copyStringSet(&mu, found), false
 	}
@@ -611,6 +641,17 @@ func (m *MQTTSink) enumerateRetainedConfigs() (map[string]struct{}, bool) {
 	}
 	m.client.Unsubscribe(filter)
 	return copyStringSet(&mu, found), true
+}
+
+// subscribeRefused reports a SUBACK failure code (0x80, e.g. a broker ACL
+// denial). paho records it only in the token result, not as a token error.
+func subscribeRefused(tok mqtt.Token, filter string) bool {
+	st, ok := tok.(*mqtt.SubscribeToken)
+	if !ok {
+		return false
+	}
+	code, granted := st.Result()[filter]
+	return granted && code >= 0x80
 }
 
 // copyStringSet returns a snapshot of src taken under mu, so the caller never

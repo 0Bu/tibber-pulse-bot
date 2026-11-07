@@ -85,6 +85,18 @@ mkdir -p "$repo_t"
 expect 0 "install-hooks respects core.hooksPath" test -x "$repo_t/.custom-hooks/pre-push"
 expect 0 "install-hooks installs pre-commit" test -x "$repo_t/.custom-hooks/pre-commit"
 expect 0 "install-hooks installs pre-merge-commit" test -x "$repo_t/.custom-hooks/pre-merge-commit"
+test_global_hooks_path() {
+  local repo="$t/global_hooks_repo"
+  mkdir -p "$repo"
+  printf '[core]\n\thooksPath = %s\n' "$t/shared-hooks" > "$t/global_gitconfig"
+  (
+    cd "$repo"
+    git init -q
+    GIT_CONFIG_GLOBAL="$t/global_gitconfig" "$REPO_ROOT/scripts/install-hooks.sh" >/dev/null 2>&1
+  )
+}
+expect 2 "install-hooks refuses a global core.hooksPath" test_global_hooks_path
+expect 1 "install-hooks wrote nothing into the shared hooks dir" test -e "$t/shared-hooks/pre-push"
 
 # --- pre-push-secret-gate.sh -------------------------------------------------
 echo '{"name": "run_command", "arguments": {"CommandLine": "echo hello"}}' > "$t/tool_non_push"
@@ -139,6 +151,36 @@ test_pre_push_leak() {
   )
 }
 expect 2 "pre-push catches secret deleted in later commit" test_pre_push_leak
+
+# An added line that itself starts with "+", and a patch GNU grep would call
+# binary (NUL past git's 8000-byte text probe), must still be scanned.
+(
+  cd "$sec_repo"
+  git checkout -q -b plus main
+  printf '+%s\n' "$pw" > plus.txt
+  git add plus.txt
+  git commit -q -m "plus-prefixed line"
+  git checkout -q -b pluscred main
+  printf '+%s_PULSE_%s=%s\n' TIBBER PASSWORD secret1234 > plus.patch
+  git add plus.patch
+  git commit -q -m "plus-prefixed credential"
+  git checkout -q -b nul main
+  { head -c 8200 /dev/zero | tr '\0' 'a'; printf '\n\0\n%s_PULSE_%s=%s\n' TIBBER PASSWORD secret1234; } > nul.txt
+  git add nul.txt
+  git commit -q -m "late NUL byte"
+  git checkout -q main
+)
+test_pre_push_branch() {
+  printf 'refs/heads/%s %s refs/heads/%s 0000000000000000000000000000000000000000\n' \
+    "$1" "$(git -C "$sec_repo" rev-parse "$1")" "$1" > "$t/push_branch"
+  (
+    cd "$sec_repo"
+    "$REPO_ROOT/scripts/pre-push-secret-gate.sh" < "$t/push_branch"
+  )
+}
+expect 2 "pre-push scans added lines that start with +" test_pre_push_branch plus
+expect 2 "pre-push catches a credential on a +-prefixed added line" test_pre_push_branch pluscred
+expect 2 "pre-push scans patches grep would treat as binary" test_pre_push_branch nul
 
 # --- pre-merge-review-gate.sh ------------------------------------------------
 echo '{"tool_name": "bash", "tool_input": {"command": "git -C . merge feature"}}' > "$t/merge_unapproved"
