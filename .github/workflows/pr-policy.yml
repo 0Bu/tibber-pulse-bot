@@ -3,7 +3,8 @@ name: pr-policy
 # Merge-gate policy: the PR body must record every required review, stamped
 # with the current head SHA (scripts/check-pr-gates.sh), and the PR's commits,
 # text and patches must pass the hygiene check (scripts/check-pr-hygiene.sh).
-# A verified Renovate version update skips both: its tests alone decide.
+# A verified Renovate version update needs no review records and its text is
+# not judged (upstream release notes); only its diff is still scanned.
 #
 # pull_request_target loads this workflow and the scripts from the protected
 # BASE branch, so a PR cannot weaken the policy that judges it. It must stay
@@ -16,11 +17,12 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, edited, ready_for_review]
 
-# Renovate heads get one group per run: Renovate force-pushes and edits its PR
-# in the same second, and a cancelled `gates` check run stays on that commit,
-# which Renovate never treats as green, so the update would never automerge.
+# Renovate heads of this repository get one group per run: Renovate
+# force-pushes and edits its PR in the same second, and a cancelled `gates`
+# check run stays on that commit, which Renovate never treats as green, so the
+# update would never automerge. A stale run's failure lands on the old commit.
 concurrency:
-  group: pr-policy-${{ github.event.pull_request.number }}${{ startsWith(github.event.pull_request.head.ref, 'renovate/') && format('-{0}', github.run_id) || '' }}
+  group: pr-policy-${{ github.event.pull_request.number }}${{ startsWith(github.event.pull_request.head.ref, 'renovate/') && github.event.pull_request.head.repo.full_name == github.repository && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -79,29 +81,33 @@ jobs:
 
       # Same repo, renovate/* branch, every commit authored AND committed by the
       # Renovate identity, only Renovate-managed files (check-pr-gates.sh). Such
-      # a PR needs no review records, and the hygiene check has nothing to
-      # judge but upstream release notes in its body and Renovate's own version
-      # strings; test/helm/build decide and Renovate automerges once they are
-      # green. Bad input (exit 2) is treated as "not Renovate", so the normal
-      # gates below fail closed.
+      # a PR needs no review records, and its title, body and commit messages
+      # are Renovate's and upstream's text (release notes), which the hygiene
+      # check must not judge; its diff is still scanned. test/helm/build decide
+      # and Renovate automerges once they are green. Bad input (exit 2) counts
+      # as "not Renovate", so the normal gates below fail closed.
       - name: Renovate version update
         id: renovate
         run: |
           d="$RUNNER_TEMP/pr"
           if scripts/check-pr-gates.sh --renovate-only --files-file "$d/gate-files.txt" \
                --meta-file "$d/pr.json" --commits-file "$d/commits.json"; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "verified=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Review gates recorded for the current head
-        if: ${{ steps.renovate.outputs.skip != 'true' }}
+        if: ${{ steps.renovate.outputs.verified != 'true' }}
         run: |
           d="$RUNNER_TEMP/pr"
           scripts/check-pr-gates.sh --body-file "$d/body.md" --head-sha "$(cat "$d/head")" \
             --files-file "$d/gate-files.txt" --meta-file "$d/pr.json" --commits-file "$d/commits.json"
 
       - name: PR hygiene (personal data, secrets, English)
-        if: ${{ !cancelled() && steps.renovate.outputs.skip != 'true' }}
+        if: ${{ !cancelled() }}
+        env:
+          RENOVATE_VERIFIED: ${{ steps.renovate.outputs.verified }}
         run: |
           d="$RUNNER_TEMP/pr"
-          scripts/check-pr-hygiene.sh --text "$d/text.txt" --diff "$d/diff.txt"
+          text="$d/text.txt"
+          if [ "$RENOVATE_VERIFIED" = true ]; then text=/dev/null; fi
+          scripts/check-pr-hygiene.sh --text "$text" --diff "$d/diff.txt"

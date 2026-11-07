@@ -53,7 +53,8 @@ commits bot@renovateapp.com; meta feature/x 0Bu/tibber-pulse-bot; expect 1 "non-
 meta renovate/x fork/tibber-pulse-bot;                       expect 1 "fork not exempt" rgate
 meta renovate/x 0Bu/tibber-pulse-bot; printf 'internal/sml/parse.go\n' >> "$t/files"; expect 1 "Renovate PR touching code not exempt" rgate
 
-# --renovate-only drives pr-policy.yml: 0 skips the whole gates job (tests decide).
+# --renovate-only drives pr-policy.yml: 0 skips the review-record step and the
+# PR-text part of hygiene inside the gates job, which still reports success.
 ronly() { scripts/check-pr-gates.sh --renovate-only --files-file "$t/files" --meta-file "$t/meta" --commits-file "$t/commits"; }
 printf 'Dockerfile\ngo.mod\ngo.sum\n.github/workflows/docker.yml\n' > "$t/files"
 meta renovate/x 0Bu/tibber-pulse-bot; commits bot@renovateapp.com; expect 0 "renovate-only: verified Renovate update" ronly

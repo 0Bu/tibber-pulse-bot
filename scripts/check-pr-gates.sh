@@ -16,8 +16,9 @@
 # pr.json / commits.json are the GitHub REST responses for the PR and its
 # commits; they are only needed to recognise a Renovate PR (see below).
 # Exit: 0 = all required gates recorded, 1 = missing/stale, 2 = bad input.
-# --renovate-only: 0 = verified Renovate version update (tests alone decide,
-# see pr-policy.yml), 1 = not one (the normal gates apply), 2 = bad input.
+# --renovate-only: 0 = verified Renovate version update (no review records,
+# no PR-text hygiene; see pr-policy.yml), 1 = not one (the normal gates
+# apply), 2 = bad input.
 set -uo pipefail
 
 body_file="" head_sha="" files_file="" meta_file="" commits_file="" renovate_only=0
@@ -47,7 +48,8 @@ fi
 
 # Renovate owns renovate/* branches and automerges (RENOVATE_AUTOMERGE in
 # renovate.yaml) as soon as the tests are green: its version updates need no
-# review records and no PR-text hygiene (the body is upstream release notes)
+# review records and no PR-text hygiene (the body is upstream release notes;
+# pr-policy.yml still scans the diff)
 # when they come from this repo, every commit's author AND committer is the
 # Renovate identity configured there, and the diff stays inside the files
 # Renovate manages. Anything else — a fork, an extra file, a commit amended or
