@@ -791,3 +791,24 @@ func TestEnumerateRetainedConfigsRefusedSubscription(t *testing.T) {
 		t.Fatal("SUBACK 0x80 must report failure so the publish-only legacy cleanup runs")
 	}
 }
+
+func TestSetReadingsExpireAfterReannouncesReadings(t *testing.T) {
+	client := newFakeMQTTClient()
+	m := newTestMQTTSink(client, "homeassistant")
+	readings := []sml.Reading{
+		{Name: "meter_serial", Raw: "LGZ-81199038"},
+		{Name: "power_total", Value: 100},
+	}
+	if err := m.Publish(context.Background(), readings); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	m.SetReadingsExpireAfter(180)
+	if err := m.Publish(context.Background(), readings); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	dev := discovery.Device{MeterSerial: "LGZ-81199038"}
+	topic := discovery.ConfigTopic("homeassistant", "power_total", discovery.Sensors["power_total"], dev)
+	if got := decodeConfig(t, client, topic)["expire_after"]; got != float64(180) {
+		t.Errorf("expire_after after fallback = %v, want 180", got)
+	}
+}

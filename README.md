@@ -202,7 +202,7 @@ the HTTP data endpoint works. The log then shows `switching to poll mode`.
 | `--pulse-password` | `$TIBBER_PULSE_PASSWORD` | Bridge admin password |
 | `--pulse-node` | `1` | Bridge node id (node metrics & poll mode) |
 | `--mode` | `push` | `push` (WebSocket) or `poll` (HTTP) |
-| `--interval` | `10s` | Poll interval (poll mode, and push mode after its automatic fallback to poll); must be positive |
+| `--interval` | `10s` | Poll interval (poll mode, and push mode after its automatic fallback to poll; must be positive in poll mode, push falls back with `10s` if it is not) |
 | `--ws-idle-timeout` | `60s` | Reconnect WS if no message arrives |
 | `--reconnect-delay` | `100ms` | Delay before reconnecting after WS drop (100ms avoids dropped telegrams) |
 | `--mqtt-host` | (empty → stdout) | MQTT broker host |
@@ -214,7 +214,7 @@ the HTTP data endpoint works. The log then shows `switching to poll mode`.
 | `--ha-discovery` | `false` | Publish Home Assistant MQTT-Discovery configs |
 | `--ha-discovery-prefix` | `homeassistant` | HA discovery topic prefix |
 | `--metrics-interval` | `60s` | Bridge diagnostics poll cadence; `0` disables |
-| `--expire-after` | `0` (auto) | HA `expire_after` in seconds for readings: `0` = auto (`max(30, 3×--interval)` in both modes, since push can fall back to poll), `>0` = that value, `<0` = disabled (readings and diagnostics). Diagnostics get `max(3×--metrics-interval, readings value)` |
+| `--expire-after` | `0` (auto) | HA `expire_after` in seconds for readings: `0` = auto (30 s push, `max(30, 3×--interval)` poll, and after a push→poll fallback), `>0` = that value, `<0` = disabled (readings and diagnostics). Diagnostics get `max(3×--metrics-interval, readings value)` |
 | `--version` | `false` | Print version and exit |
 
 ## MQTT topics

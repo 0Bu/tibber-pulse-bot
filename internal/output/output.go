@@ -226,6 +226,18 @@ func (m *MQTTSink) SetBridgeHost(host string) {
 	m.mu.Unlock()
 }
 
+// SetReadingsExpireAfter changes expire_after of the reading entities, e.g.
+// after push mode fell back to polling, and re-announces them on the next
+// Publish so Home Assistant picks up the new value.
+func (m *MQTTSink) SetReadingsExpireAfter(seconds int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.readingsExpireAfter != seconds {
+		m.readingsExpireAfter = seconds
+		m.readingsDiscovered = map[string]bool{}
+	}
+}
+
 func (m *MQTTSink) Publish(_ context.Context, readings []sml.Reading) error {
 	if m.discoveryPrefix != "" {
 		if err := m.maybeAnnounceReadings(readings); err != nil {
@@ -461,11 +473,13 @@ func (m *MQTTSink) announce(name string, spec discovery.SensorSpec, dev discover
 	topic := discovery.ConfigTopic(m.discoveryPrefix, name, spec, dev)
 	var opts discovery.EntityOptions
 	opts.AvailabilityTopic = m.availabilityTopic
+	m.mu.Lock()
 	if stateTopic == m.prefix+"/readings" {
 		opts.ExpireAfter = m.readingsExpireAfter
 	} else if stateTopic == m.prefix+"/diagnostics" {
 		opts.ExpireAfter = m.diagnosticsExpireAfter
 	}
+	m.mu.Unlock()
 	payload, err := discovery.MarshalConfig(discovery.BuildConfig(name, spec, dev, stateTopic, opts))
 	if err != nil {
 		return fmt.Errorf("mqtt: encode discovery %s: %w", name, err)

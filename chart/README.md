@@ -106,14 +106,14 @@ Top-level keys in `values.yaml`:
 | `mqtt.topic` | `tibber/pulse` | Topic prefix |
 | `mqtt.clientID` | `tibber-pulse-bot` | MQTT client id |
 | `mode` | `push` | `push` (WebSocket) or `poll` (HTTP) |
-| `pollInterval` | `10s` | Poll cadence (poll mode, and push mode after its automatic fallback to poll); must be positive |
+| `pollInterval` | `10s` | Poll cadence (poll mode, and push mode after its automatic fallback to poll) |
 | `wsIdleTimeout` | `60s` | Reconnect WS if no message arrives |
 | `reconnectDelay` | `100ms` | Delay before reconnecting after WS drop |
 | `quiet` | `false` | Suppress per-update stdout one-liner |
 | `verbose` | `false` | Verbose logging: log every WS reconnect |
 | `homeAssistant.discovery` | `false` | Publish HA MQTT-Discovery configs |
 | `homeAssistant.discoveryPrefix` | `homeassistant` | HA discovery topic prefix |
-| `homeAssistant.expireAfter` | `0` | HA `expire_after` seconds for readings: `0` = auto (`max(30, 3×pollInterval)`), `>0` = that value, `<0` = disabled; diagnostics get `max(3×metricsInterval, readings value)` |
+| `homeAssistant.expireAfter` | `0` | HA `expire_after` seconds for readings: `0` = auto (30 s push, `max(30, 3×pollInterval)` poll and after a push→poll fallback), `>0` = that value, `<0` = disabled; diagnostics get `max(3×metricsInterval, readings value)` |
 | `metricsInterval` | `60s` | Reduced bridge diagnostics JSON cadence; `0` disables |
 | `replicaCount` | `1` | Deployment replica count |
 | `resources` | 10m / 16Mi req, 64Mi limit | Container resource requests/limits |

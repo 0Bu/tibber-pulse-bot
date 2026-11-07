@@ -40,7 +40,7 @@ func main() {
 	mqttClientID := flag.String("mqtt-client-id", "tibber-pulse-bot", "MQTT client id")
 	haDiscovery := flag.Bool("ha-discovery", false, "Publish Home Assistant MQTT-Discovery configs (retain=true)")
 	haDiscoveryPrefix := flag.String("ha-discovery-prefix", "homeassistant", "Topic prefix HA listens on for discovery")
-	interval := flag.Duration("interval", 10*time.Second, "Poll interval (poll mode, and push mode after falling back to poll)")
+	interval := flag.Duration("interval", 10*time.Second, "Poll interval (poll mode, and push mode after falling back to poll; 10s if not positive there)")
 	idleTimeout := flag.Duration("ws-idle-timeout", 60*time.Second, "Reconnect WS if no message arrives within this window (push mode)")
 	reconnectDelay := flag.Duration("reconnect-delay", 100*time.Millisecond, "Delay before reconnecting after WS disconnect (100ms prevents missed telegrams during bridge idle socket drops)")
 	verbose := flag.Bool("v", false, "Verbose: log every WS reconnect (default: only real errors)")
@@ -96,7 +96,7 @@ func main() {
 		if *haDiscovery {
 			discoveryPrefix = *haDiscoveryPrefix
 		}
-		readingsExp, diagExp := calculateExpiration(*expireAfter, *interval, *metricsInterval)
+		readingsExp, diagExp := calculateExpiration(*expireAfter, *mode, *interval, *metricsInterval)
 		s, err := output.NewMQTTSink(*mqttHost, *mqttPort, *mqttClientID, *mqttTopic, discoveryPrefix, readingsExp, diagExp)
 		if err != nil {
 			log.Fatalf("mqtt connect: %v", err)
@@ -129,8 +129,13 @@ func main() {
 	} else {
 		runErr = runPush(ctx, client, sink, *idleTimeout, *reconnectDelay, *verbose)
 		if errors.Is(runErr, errFallbackToPoll) && ctx.Err() == nil {
-			log.Printf("switching to poll mode (interval=%s)", *interval)
-			runErr = runPoll(ctx, client, sink, *interval)
+			pollInterval := fallbackPollInterval(*interval)
+			log.Printf("switching to poll mode (interval=%s)", pollInterval)
+			if mqttSink != nil {
+				readingsExp, _ := calculateExpiration(*expireAfter, "poll", pollInterval, *metricsInterval)
+				mqttSink.SetReadingsExpireAfter(readingsExp)
+			}
+			runErr = runPoll(ctx, client, sink, pollInterval)
 		}
 	}
 
@@ -371,9 +376,8 @@ func validateConfig(cfg botConfig) error {
 	if cfg.pulseNode < 1 {
 		return fmt.Errorf("--pulse-node must be >= 1, got %d", cfg.pulseNode)
 	}
-	// Push mode falls back to polling at --interval, so it must be valid there too.
-	if cfg.interval <= 0 {
-		return fmt.Errorf("--interval must be positive, got %s", cfg.interval)
+	if cfg.mode == "poll" && cfg.interval <= 0 {
+		return fmt.Errorf("--interval must be positive in poll mode, got %s", cfg.interval)
 	}
 	if cfg.idleTimeout < 0 {
 		return fmt.Errorf("--ws-idle-timeout cannot be negative, got %s", cfg.idleTimeout)
@@ -407,13 +411,25 @@ func flagSet(name string) bool {
 	return set
 }
 
-// calculateExpiration derives the auto readings expiry from the poll interval
-// in push mode too, because push falls back to polling at that interval.
-func calculateExpiration(expireAfter int, pollInterval, metricsInterval time.Duration) (int, int) {
+// fallbackPollInterval is the poll cadence after push mode fell back to
+// polling. --interval is only validated in poll mode, so push setups that set
+// it to zero keep starting and get the flag default once they fall back.
+func fallbackPollInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return 10 * time.Second
+	}
+	return interval
+}
+
+func calculateExpiration(expireAfter int, mode string, pollInterval, metricsInterval time.Duration) (int, int) {
 	readingsExp := expireAfter
 	if readingsExp == 0 {
-		readingsExp = int(3 * pollInterval.Seconds())
-		if readingsExp < 30 {
+		if mode == "poll" {
+			readingsExp = int(3 * pollInterval.Seconds())
+			if readingsExp < 30 {
+				readingsExp = 30
+			}
+		} else {
 			readingsExp = 30
 		}
 	} else if readingsExp < 0 {

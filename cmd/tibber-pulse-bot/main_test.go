@@ -298,11 +298,11 @@ func TestValidateConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("push mode with non-positive interval fails", func(t *testing.T) {
+	t.Run("push mode tolerates a non-positive interval", func(t *testing.T) {
 		c := valid
 		c.interval = 0
-		if err := validateConfig(c); err == nil {
-			t.Error("want error for zero interval in push mode (poll fallback uses it)")
+		if err := validateConfig(c); err != nil {
+			t.Errorf("push mode only polls after a fallback, which uses fallbackPollInterval: %v", err)
 		}
 	})
 
@@ -376,6 +376,7 @@ func TestCalculateExpiration(t *testing.T) {
 	tests := []struct {
 		name            string
 		expireAfter     int
+		mode            string
 		pollInterval    time.Duration
 		metricsInterval time.Duration
 		wantReadings    int
@@ -384,30 +385,34 @@ func TestCalculateExpiration(t *testing.T) {
 		{
 			name:            "push mode auto",
 			expireAfter:     0,
+			mode:            "push",
 			pollInterval:    10 * time.Second,
 			metricsInterval: 60 * time.Second,
 			wantReadings:    30,
 			wantDiag:        180,
 		},
 		{
-			name:            "auto short interval",
+			name:            "poll mode auto short interval",
 			expireAfter:     0,
+			mode:            "poll",
 			pollInterval:    5 * time.Second,
 			metricsInterval: 60 * time.Second,
 			wantReadings:    30, // max(30, 3*5) = 30
 			wantDiag:        180,
 		},
 		{
-			name:            "auto long interval",
+			name:            "poll mode auto long interval",
 			expireAfter:     0,
+			mode:            "poll",
 			pollInterval:    20 * time.Second,
 			metricsInterval: 60 * time.Second,
 			wantReadings:    60, // 3*20 = 60
 			wantDiag:        180,
 		},
 		{
-			name:            "push mode long interval covers poll fallback",
+			name:            "push mode after fallback to a slow poll",
 			expireAfter:     0,
+			mode:            "poll",
 			pollInterval:    60 * time.Second,
 			metricsInterval: 60 * time.Second,
 			wantReadings:    180,
@@ -416,6 +421,7 @@ func TestCalculateExpiration(t *testing.T) {
 		{
 			name:            "explicit positive expireAfter",
 			expireAfter:     45,
+			mode:            "push",
 			pollInterval:    10 * time.Second,
 			metricsInterval: 60 * time.Second,
 			wantReadings:    45,
@@ -424,6 +430,7 @@ func TestCalculateExpiration(t *testing.T) {
 		{
 			name:            "explicit expireAfter larger than diagnostics",
 			expireAfter:     300,
+			mode:            "push",
 			pollInterval:    10 * time.Second,
 			metricsInterval: 60 * time.Second,
 			wantReadings:    300,
@@ -432,6 +439,7 @@ func TestCalculateExpiration(t *testing.T) {
 		{
 			name:            "disabled negative expireAfter",
 			expireAfter:     -1,
+			mode:            "push",
 			pollInterval:    10 * time.Second,
 			metricsInterval: 60 * time.Second,
 			wantReadings:    0,
@@ -440,6 +448,7 @@ func TestCalculateExpiration(t *testing.T) {
 		{
 			name:            "metricsInterval disabled",
 			expireAfter:     0,
+			mode:            "push",
 			pollInterval:    10 * time.Second,
 			metricsInterval: 0,
 			wantReadings:    30,
@@ -449,7 +458,7 @@ func TestCalculateExpiration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotR, gotD := calculateExpiration(tt.expireAfter, tt.pollInterval, tt.metricsInterval)
+			gotR, gotD := calculateExpiration(tt.expireAfter, tt.mode, tt.pollInterval, tt.metricsInterval)
 			if gotR != tt.wantReadings {
 				t.Errorf("readingsExpire = %d, want %d", gotR, tt.wantReadings)
 			}
@@ -514,4 +523,16 @@ func TestPulsePasswordFlag(t *testing.T) {
 			t.Fatalf("want the missing-password error, got exit %d:\n%s", code, out)
 		}
 	})
+}
+
+func TestFallbackPollInterval(t *testing.T) {
+	for in, want := range map[time.Duration]time.Duration{
+		0:                10 * time.Second,
+		-time.Second:     10 * time.Second,
+		30 * time.Second: 30 * time.Second,
+	} {
+		if got := fallbackPollInterval(in); got != want {
+			t.Errorf("fallbackPollInterval(%s) = %s, want %s", in, got, want)
+		}
+	}
 }

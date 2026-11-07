@@ -20,7 +20,9 @@ fi
 # Keep the password out of the process list: the bot reads it from the
 # environment, curl from a config on stdin.
 export TIBBER_PULSE_PASSWORD="$PASSWORD"
-bridge_curl() { printf 'user = "admin:%s"\n' "$PASSWORD" | curl -K - "$@"; }
+CURL_PW=${PASSWORD//\\/\\\\}
+CURL_PW=${CURL_PW//\"/\\\"}
+bridge_curl() { printf 'user = "admin:%s"\n' "$CURL_PW" | curl -K - "$@"; }
 
 echo "==================================================================="
 echo "Tibber Pulse Bridge Live Test"
@@ -133,7 +135,12 @@ if [[ $TELEGRAM_COUNT -eq 0 ]]; then
   exit 1
 fi
 echo "  ✓ Received $TELEGRAM_COUNT telegram(s) in 6 seconds"
-echo "  ✓ Sample reading: $(echo "$PUSH_LOG" | grep -E 'power_total' | head -n1 | tr -d ' ')"
+SAMPLE=$(echo "$PUSH_LOG" | grep -E 'power_total' | head -n1 | tr -d ' ' || true)
+if [[ -n "$SAMPLE" ]]; then
+  echo "  ✓ Sample reading: $SAMPLE"
+else
+  echo "  ! No power_total in the push telegrams (meter PIN not entered?)"
+fi
 
 if echo "$PUSH_LOG" | grep -q 'bridge:'; then
   echo "  ✓ Diagnostics:    $(echo "$PUSH_LOG" | grep 'bridge:' | head -n1)"
