@@ -40,8 +40,8 @@ MQTT sink in `internal/output/output.go`:
   diagnostics get separate values from `calculateExpiration` in
   `cmd/tibber-pulse-bot/main.go`:
   - `--expire-after 0` (auto): readings 30 s in push mode, `max(30, 3 × --interval)` in poll mode;
-    after a push→poll fallback `MQTTSink.SetReadingsExpireAfter` switches readings to the poll value
-    and re-announces them;
+    after a push→poll fallback `MQTTSink.SetExpireAfter` switches both to the poll-mode values
+    and re-announces them (`fallbackSettings`);
     diagnostics `3 × --metrics-interval`, raised to the readings value if that is larger.
   - `--expire-after N > 0`: readings N; diagnostics `max(N, 3 × --metrics-interval)`.
   - `--expire-after < 0`: disabled for both.

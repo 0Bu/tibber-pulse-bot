@@ -160,6 +160,10 @@ expect 2 "pre-push catches secret deleted in later commit" test_pre_push_leak
   printf '+%s\n' "$pw" > plus.txt
   git add plus.txt
   git commit -q -m "plus-prefixed line"
+  git checkout -q -b pluscred main
+  printf '+%s_PULSE_%s=%s\n' TIBBER PASSWORD secret1234 > plus.patch
+  git add plus.patch
+  git commit -q -m "plus-prefixed credential"
   git checkout -q -b nul main
   { head -c 8200 /dev/zero | tr '\0' 'a'; printf '\n\0\n%s_PULSE_%s=%s\n' TIBBER PASSWORD secret1234; } > nul.txt
   git add nul.txt
@@ -175,6 +179,7 @@ test_pre_push_branch() {
   )
 }
 expect 2 "pre-push scans added lines that start with +" test_pre_push_branch plus
+expect 2 "pre-push catches a credential on a +-prefixed added line" test_pre_push_branch pluscred
 expect 2 "pre-push scans patches grep would treat as binary" test_pre_push_branch nul
 
 # --- pre-merge-review-gate.sh ------------------------------------------------

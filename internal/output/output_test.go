@@ -792,7 +792,7 @@ func TestEnumerateRetainedConfigsRefusedSubscription(t *testing.T) {
 	}
 }
 
-func TestSetReadingsExpireAfterReannouncesReadings(t *testing.T) {
+func TestSetExpireAfterReannounces(t *testing.T) {
 	client := newFakeMQTTClient()
 	m := newTestMQTTSink(client, "homeassistant")
 	readings := []sml.Reading{
@@ -802,13 +802,31 @@ func TestSetReadingsExpireAfterReannouncesReadings(t *testing.T) {
 	if err := m.Publish(context.Background(), readings); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	m.SetReadingsExpireAfter(180)
+	if err := m.PublishBridgeUpdate(BridgeUpdate{Metrics: pulse.Metrics{BatteryVoltage: 3.0}}); err != nil {
+		t.Fatalf("PublishBridgeUpdate: %v", err)
+	}
+	m.SetExpireAfter(360, 360)
 	if err := m.Publish(context.Background(), readings); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	dev := discovery.Device{MeterSerial: "LGZ-81199038"}
-	topic := discovery.ConfigTopic("homeassistant", "power_total", discovery.Sensors["power_total"], dev)
-	if got := decodeConfig(t, client, topic)["expire_after"]; got != float64(180) {
-		t.Errorf("expire_after after fallback = %v, want 180", got)
+	powerTopic := discovery.ConfigTopic("homeassistant", "power_total", discovery.Sensors["power_total"], dev)
+	if got := decodeConfig(t, client, powerTopic)["expire_after"]; got != float64(360) {
+		t.Errorf("readings expire_after after fallback = %v, want 360", got)
+	}
+	diagTopic := discovery.ConfigTopic("homeassistant", "bridge_battery_voltage", discovery.Diagnostics["bridge_battery_voltage"], dev)
+	if got := decodeConfig(t, client, diagTopic)["expire_after"]; got != float64(360) {
+		t.Errorf("diagnostics expire_after after fallback = %v, want 360", got)
+	}
+
+	// The re-announce must not forget which configs to retract on a serial change.
+	if err := m.Publish(context.Background(), []sml.Reading{
+		{Name: "meter_serial", Raw: "EMH-1"},
+		{Name: "power_total", Value: 100},
+	}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if msg, ok := client.message(powerTopic); !ok || msg.payload != "" {
+		t.Errorf("old-serial config %s not retracted after SetExpireAfter: %+v", powerTopic, msg)
 	}
 }

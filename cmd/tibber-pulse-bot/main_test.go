@@ -302,7 +302,7 @@ func TestValidateConfig(t *testing.T) {
 		c := valid
 		c.interval = 0
 		if err := validateConfig(c); err != nil {
-			t.Errorf("push mode only polls after a fallback, which uses fallbackPollInterval: %v", err)
+			t.Errorf("push mode only polls after a fallback, which uses fallbackSettings: %v", err)
 		}
 	})
 
@@ -410,7 +410,7 @@ func TestCalculateExpiration(t *testing.T) {
 			wantDiag:        180,
 		},
 		{
-			name:            "push mode after fallback to a slow poll",
+			name:            "poll mode slow interval",
 			expireAfter:     0,
 			mode:            "poll",
 			pollInterval:    60 * time.Second,
@@ -486,6 +486,9 @@ func runMain(t *testing.T, env []string, args ...string) (string, int) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestMainSubprocess$")
 	cmd.Env = append([]string{"TPB_MAIN_ARGS=" + strings.Join(args, "\n")}, env...)
+	if dir, ok := os.LookupEnv("GOCOVERDIR"); ok {
+		cmd.Env = append(cmd.Env, "GOCOVERDIR="+dir)
+	}
 	out, err := cmd.CombinedOutput()
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -525,14 +528,26 @@ func TestPulsePasswordFlag(t *testing.T) {
 	})
 }
 
-func TestFallbackPollInterval(t *testing.T) {
-	for in, want := range map[time.Duration]time.Duration{
-		0:                10 * time.Second,
-		-time.Second:     10 * time.Second,
-		30 * time.Second: 30 * time.Second,
-	} {
-		if got := fallbackPollInterval(in); got != want {
-			t.Errorf("fallbackPollInterval(%s) = %s, want %s", in, got, want)
-		}
+func TestFallbackSettings(t *testing.T) {
+	tests := []struct {
+		name                  string
+		expireAfter           int
+		interval              time.Duration
+		wantInterval          time.Duration
+		wantReadings, wantDia int
+	}{
+		{"zero interval polls at the default", 0, 0, defaultPollInterval, 30, 180},
+		{"negative interval polls at the default", 0, -time.Second, defaultPollInterval, 30, 180},
+		{"slow poll widens readings and diagnostics", 0, 120 * time.Second, 120 * time.Second, 360, 360},
+		{"explicit expiry is kept", 45, 120 * time.Second, 120 * time.Second, 45, 180},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotI, gotR, gotD := fallbackSettings(tt.expireAfter, tt.interval, 60*time.Second)
+			if gotI != tt.wantInterval || gotR != tt.wantReadings || gotD != tt.wantDia {
+				t.Errorf("fallbackSettings = (%s, %d, %d), want (%s, %d, %d)",
+					gotI, gotR, gotD, tt.wantInterval, tt.wantReadings, tt.wantDia)
+			}
+		})
 	}
 }

@@ -40,7 +40,7 @@ func main() {
 	mqttClientID := flag.String("mqtt-client-id", "tibber-pulse-bot", "MQTT client id")
 	haDiscovery := flag.Bool("ha-discovery", false, "Publish Home Assistant MQTT-Discovery configs (retain=true)")
 	haDiscoveryPrefix := flag.String("ha-discovery-prefix", "homeassistant", "Topic prefix HA listens on for discovery")
-	interval := flag.Duration("interval", 10*time.Second, "Poll interval (poll mode, and push mode after falling back to poll; 10s if not positive there)")
+	interval := flag.Duration("interval", defaultPollInterval, "Poll interval (poll mode, and push mode after falling back to poll; 10s if not positive there)")
 	idleTimeout := flag.Duration("ws-idle-timeout", 60*time.Second, "Reconnect WS if no message arrives within this window (push mode)")
 	reconnectDelay := flag.Duration("reconnect-delay", 100*time.Millisecond, "Delay before reconnecting after WS disconnect (100ms prevents missed telegrams during bridge idle socket drops)")
 	verbose := flag.Bool("v", false, "Verbose: log every WS reconnect (default: only real errors)")
@@ -129,11 +129,10 @@ func main() {
 	} else {
 		runErr = runPush(ctx, client, sink, *idleTimeout, *reconnectDelay, *verbose)
 		if errors.Is(runErr, errFallbackToPoll) && ctx.Err() == nil {
-			pollInterval := fallbackPollInterval(*interval)
+			pollInterval, readingsExp, diagExp := fallbackSettings(*expireAfter, *interval, *metricsInterval)
 			log.Printf("switching to poll mode (interval=%s)", pollInterval)
 			if mqttSink != nil {
-				readingsExp, _ := calculateExpiration(*expireAfter, "poll", pollInterval, *metricsInterval)
-				mqttSink.SetReadingsExpireAfter(readingsExp)
+				mqttSink.SetExpireAfter(readingsExp, diagExp)
 			}
 			runErr = runPoll(ctx, client, sink, pollInterval)
 		}
@@ -260,6 +259,8 @@ func logBridgeStdout(u output.BridgeUpdate) {
 		m.BatteryVoltage, m.Temperature, m.AvgRSSI, wifiRSSI,
 		m.MeterCorruptCountRecv, avail, lastData)
 }
+
+const defaultPollInterval = 10 * time.Second
 
 var errFallbackToPoll = errors.New("ws does not deliver SML frames; falling back to poll")
 
@@ -411,14 +412,15 @@ func flagSet(name string) bool {
 	return set
 }
 
-// fallbackPollInterval is the poll cadence after push mode fell back to
-// polling. --interval is only validated in poll mode, so push setups that set
-// it to zero keep starting and get the flag default once they fall back.
-func fallbackPollInterval(interval time.Duration) time.Duration {
+// fallbackSettings returns the poll cadence and HA expiries once push mode has
+// fallen back to polling. --interval is only validated in poll mode, so push
+// setups that set it to zero keep starting and poll at the default.
+func fallbackSettings(expireAfter int, interval, metricsInterval time.Duration) (time.Duration, int, int) {
 	if interval <= 0 {
-		return 10 * time.Second
+		interval = defaultPollInterval
 	}
-	return interval
+	readingsExp, diagExp := calculateExpiration(expireAfter, "poll", interval, metricsInterval)
+	return interval, readingsExp, diagExp
 }
 
 func calculateExpiration(expireAfter int, mode string, pollInterval, metricsInterval time.Duration) (int, int) {

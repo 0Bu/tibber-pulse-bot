@@ -193,8 +193,7 @@ func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix s
 		SetWill(availabilityTopic, "offline", 1, true).
 		SetOnConnectHandler(func(client mqtt.Client) {
 			m.mu.Lock()
-			m.readingsDiscovered = map[string]bool{}
-			m.diagnosticsDiscovered = map[string]bool{}
+			m.markForReannounce()
 			m.mu.Unlock()
 			_ = m.publish(availabilityTopic, true, "online")
 		})
@@ -204,6 +203,9 @@ func NewMQTTSink(host string, port int, clientID, topicPrefix, discoveryPrefix s
 	m.client = mqtt.NewClient(opts)
 	t := m.client.Connect()
 	if !t.WaitTimeout(10 * time.Second) {
+		// Stop a connect that would still complete and publish "online" for a
+		// sink the caller never receives.
+		m.client.Disconnect(0)
 		return nil, fmt.Errorf("mqtt: connect timeout to %s:%d", host, port)
 	}
 	if err := t.Error(); err != nil {
@@ -226,15 +228,28 @@ func (m *MQTTSink) SetBridgeHost(host string) {
 	m.mu.Unlock()
 }
 
-// SetReadingsExpireAfter changes expire_after of the reading entities, e.g.
-// after push mode fell back to polling, and re-announces them on the next
-// Publish so Home Assistant picks up the new value.
-func (m *MQTTSink) SetReadingsExpireAfter(seconds int) {
+// SetExpireAfter changes expire_after of the reading and diagnostic entities,
+// e.g. after push mode fell back to polling, and re-announces them on their
+// next publish so Home Assistant picks up the new values.
+func (m *MQTTSink) SetExpireAfter(readings, diagnostics int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.readingsExpireAfter != seconds {
-		m.readingsExpireAfter = seconds
-		m.readingsDiscovered = map[string]bool{}
+	if m.readingsExpireAfter != readings || m.diagnosticsExpireAfter != diagnostics {
+		m.readingsExpireAfter = readings
+		m.diagnosticsExpireAfter = diagnostics
+		m.markForReannounce()
+	}
+}
+
+// markForReannounce makes every announced entity publish its config again.
+// The names stay in the maps (as false) because they are also the record of
+// which configs to retract when the meter serial changes. Caller holds m.mu.
+func (m *MQTTSink) markForReannounce() {
+	for name := range m.readingsDiscovered {
+		m.readingsDiscovered[name] = false
+	}
+	for name := range m.diagnosticsDiscovered {
+		m.diagnosticsDiscovered[name] = false
 	}
 }
 

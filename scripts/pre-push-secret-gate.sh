@@ -35,9 +35,12 @@ added_lines() {
 
 # grep -a throughout: GNU grep stops printing matches once it decides a patch
 # is binary (a NUL past git's 8000-byte probe, invalid UTF-8 in the locale).
+# Leading "+" is allowed so an added line that itself starts with "+" (e.g. a
+# committed patch) is still checked.
 check_content() {
-  local added="$1" assignment='^\+[[:space:]]*(export[[:space:]]+)?(TIBBER_PULSE_PASSWORD|MQTT_PASSWORD|pulse[._]?password|password)[[:space:]]*[:=][[:space:]]*'
-  if grep -aqE '^\+[[:space:]]*-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----' "$added"; then
+  local added="$tmp/added-lines" assignment='^[+[:space:]]*(export[[:space:]]+)?(TIBBER_PULSE_PASSWORD|MQTT_PASSWORD|pulse[._]?password|password)[[:space:]]*[:=][[:space:]]*'
+  added_lines "$1" > "$added"
+  if grep -aqE '^[+[:space:]]*-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----' "$added"; then
     fail "private key block detected (content redacted)"
   fi
   if grep -aiE "$assignment" "$added" \
