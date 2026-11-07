@@ -3,6 +3,7 @@ name: pr-policy
 # Merge-gate policy: the PR body must record every required review, stamped
 # with the current head SHA (scripts/check-pr-gates.sh), and the PR's commits,
 # text and patches must pass the hygiene check (scripts/check-pr-hygiene.sh).
+# A verified Renovate version update skips both: its tests alone decide.
 #
 # pull_request_target loads this workflow and the scripts from the protected
 # BASE branch, so a PR cannot weaken the policy that judges it. It must stay
@@ -70,14 +71,30 @@ jobs:
             { grep -a '^+' <<<"$patch" || true; } | cut -c2- >> "$d/diff.txt"
           done
 
+      # Same repo, renovate/* branch, every commit authored AND committed by the
+      # Renovate identity, only Renovate-managed files (check-pr-gates.sh). Such
+      # a PR needs no review records, and its body is upstream release notes
+      # that the hygiene check must not judge; test/helm/vuln/build decide and
+      # Renovate automerges once they are green. Bad input (exit 2) is treated
+      # as "not Renovate", so the normal gates below fail closed.
+      - name: Renovate version update
+        id: renovate
+        run: |
+          d="$RUNNER_TEMP/pr"
+          if scripts/check-pr-gates.sh --renovate-only --files-file "$d/gate-files.txt" \
+               --meta-file "$d/pr.json" --commits-file "$d/commits.json"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Review gates recorded for the current head
+        if: ${{ steps.renovate.outputs.skip != 'true' }}
         run: |
           d="$RUNNER_TEMP/pr"
           scripts/check-pr-gates.sh --body-file "$d/body.md" --head-sha "$(cat "$d/head")" \
             --files-file "$d/gate-files.txt" --meta-file "$d/pr.json" --commits-file "$d/commits.json"
 
       - name: PR hygiene (personal data, secrets, English)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.renovate.outputs.skip != 'true' }}
         run: |
           d="$RUNNER_TEMP/pr"
           scripts/check-pr-hygiene.sh --text "$d/text.txt" --diff "$d/diff.txt"

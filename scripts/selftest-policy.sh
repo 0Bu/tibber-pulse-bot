@@ -53,6 +53,17 @@ commits bot@renovateapp.com; meta feature/x 0Bu/tibber-pulse-bot; expect 1 "non-
 meta renovate/x fork/tibber-pulse-bot;                       expect 1 "fork not exempt" rgate
 meta renovate/x 0Bu/tibber-pulse-bot; printf 'internal/sml/parse.go\n' >> "$t/files"; expect 1 "Renovate PR touching code not exempt" rgate
 
+# --renovate-only drives pr-policy.yml: 0 skips the whole gates job (tests decide).
+ronly() { scripts/check-pr-gates.sh --renovate-only --files-file "$t/files" --meta-file "$t/meta" --commits-file "$t/commits"; }
+printf 'Dockerfile\ngo.mod\ngo.sum\n.github/workflows/docker.yml\n' > "$t/files"
+meta renovate/x 0Bu/tibber-pulse-bot; commits bot@renovateapp.com; expect 0 "renovate-only: verified Renovate update" ronly
+commits bot@renovateapp.com someone@users.noreply.github.com;      expect 1 "renovate-only: amended commit is not Renovate" ronly
+commits bot@renovateapp.com; meta feature/x 0Bu/tibber-pulse-bot;  expect 1 "renovate-only: other branch is not Renovate" ronly
+meta renovate/x fork/tibber-pulse-bot;                             expect 1 "renovate-only: fork is not Renovate" ronly
+meta renovate/x 0Bu/tibber-pulse-bot; printf '.github/renovate.json\n' >> "$t/files"; expect 1 "renovate-only: unmanaged file is not Renovate" ronly
+expect 2 "renovate-only: missing commits file is an input error" scripts/check-pr-gates.sh --renovate-only --files-file "$t/files" --meta-file "$t/meta"
+printf '[]' > "$t/commits"; printf 'go.mod\n' > "$t/files";        expect 1 "renovate-only: no commits is not Renovate" ronly
+
 # --- check-pr-hygiene.sh -----------------------------------------------------
 # Fixtures are assembled at runtime so this file's own diff stays clean under
 # the very check it tests.

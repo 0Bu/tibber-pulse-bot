@@ -11,14 +11,19 @@
 #
 # Usage: check-pr-gates.sh --body-file F --head-sha SHA --files-file F
 #                          [--meta-file pr.json --commits-file commits.json]
+#        check-pr-gates.sh --renovate-only --files-file F --meta-file pr.json
+#                          --commits-file commits.json
 # pr.json / commits.json are the GitHub REST responses for the PR and its
 # commits; they are only needed to recognise a Renovate PR (see below).
 # Exit: 0 = all required gates recorded, 1 = missing/stale, 2 = bad input.
+# --renovate-only: 0 = verified Renovate version update (tests alone decide,
+# see pr-policy.yml), 1 = not one (the normal gates apply), 2 = bad input.
 set -uo pipefail
 
-body_file="" head_sha="" files_file="" meta_file="" commits_file=""
+body_file="" head_sha="" files_file="" meta_file="" commits_file="" renovate_only=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --renovate-only) renovate_only=1; shift ;;
     --body-file) body_file="$2"; shift 2 ;;
     --head-sha) head_sha="$2"; shift 2 ;;
     --files-file) files_file="$2"; shift 2 ;;
@@ -27,29 +32,49 @@ while [ $# -gt 0 ]; do
     *) echo "check-pr-gates: unknown argument $1" >&2; exit 2 ;;
   esac
 done
-[ -r "$body_file" ] && [ -r "$files_file" ] || { echo "check-pr-gates: --body-file and --files-file are required" >&2; exit 2; }
-grep -Eq '^[0-9a-f]{40}$' <<<"$head_sha" || { echo "check-pr-gates: --head-sha must be a full 40-char SHA" >&2; exit 2; }
+if [ "$renovate_only" -eq 1 ]; then
+  [ -r "$files_file" ] && [ -r "$meta_file" ] && [ -r "$commits_file" ] \
+    || { echo "check-pr-gates: --renovate-only needs --files-file, --meta-file and --commits-file" >&2; exit 2; }
+else
+  [ -r "$body_file" ] && [ -r "$files_file" ] || { echo "check-pr-gates: --body-file and --files-file are required" >&2; exit 2; }
+  grep -Eq '^[0-9a-f]{40}$' <<<"$head_sha" || { echo "check-pr-gates: --head-sha must be a full 40-char SHA" >&2; exit 2; }
+fi
 [ -s "$files_file" ] || { echo "check-pr-gates: empty changed-file list; refusing to treat that as an irrelevant PR" >&2; exit 2; }
 
 # Renovate owns renovate/* branches and automerges (RENOVATE_AUTOMERGE in
-# renovate.yaml). Its PRs need no human records when they come from this repo,
-# every commit's author AND committer is the Renovate identity configured
-# there, and the diff stays inside the files Renovate manages. Anything else
-# — a fork, an extra file, a commit amended or rebased by a person (git keeps
-# the author but rewrites the committer) — falls back to the normal gates.
-# Deliberately forging both identities needs push access; that residual risk
-# is accepted for a single-maintainer repo.
+# renovate.yaml) as soon as the tests are green: its version updates need no
+# review records and no PR-text hygiene (the body is upstream release notes)
+# when they come from this repo, every commit's author AND committer is the
+# Renovate identity configured there, and the diff stays inside the files
+# Renovate manages. Anything else — a fork, an extra file, a commit amended or
+# rebased by a person (git keeps the author but rewrites the committer) —
+# falls back to the normal gates. Deliberately forging both identities needs
+# push access; that residual risk is accepted for a single-maintainer repo.
 RENOVATE_EMAIL="bot@renovateapp.com"
 RENOVATE_FILES='^(Dockerfile|go\.mod|go\.sum|docker-compose\.yml|README\.md|AGENTS\.md|CLAUDE\.md|chart/Chart\.yaml|chart/values\.yaml|\.github/workflows/[A-Za-z0-9._-]+\.ya?ml)$'
-if [ -n "$meta_file" ] && [ -n "$commits_file" ]; then
+renovate_reason() {  # prints why the PR is NOT a Renovate version update; empty if it is
+  local same_repo ref authors
+  [ -n "$meta_file" ] && [ -n "$commits_file" ] || { echo "no PR metadata"; return; }
   same_repo=$(jq -r '(.head.repo.full_name // "") == (.base.repo.full_name // "-")' "$meta_file" 2>/dev/null)
   ref=$(jq -r '.head.ref // ""' "$meta_file" 2>/dev/null)
   authors=$(jq -r '.[].commit | .author.email, .committer.email' "$commits_file" 2>/dev/null | sort -u)
-  if [ "$same_repo" = true ] && [[ "$ref" == renovate/* ]] && [ "$authors" = "$RENOVATE_EMAIL" ] \
-     && ! grep -vqE "$RENOVATE_FILES" "$files_file"; then
-    echo "check-pr-gates: Renovate PR ($ref) touching only Renovate-managed files — no review records required."
+  [ "$same_repo" = true ] || { echo "head is not a branch of this repository"; return; }
+  [[ "$ref" == renovate/* ]] || { echo "branch $ref is not renovate/*"; return; }
+  [ "$authors" = "$RENOVATE_EMAIL" ] || { echo "a commit is not authored and committed by $RENOVATE_EMAIL"; return; }
+  ! grep -vqE "$RENOVATE_FILES" "$files_file" || { echo "the diff touches files Renovate does not manage"; return; }
+}
+reason=$(renovate_reason)
+if [ "$renovate_only" -eq 1 ]; then
+  if [ -z "$reason" ]; then
+    echo "check-pr-gates: verified Renovate version update — the tests alone decide."
     exit 0
   fi
+  echo "check-pr-gates: not a Renovate version update ($reason) — normal gates apply."
+  exit 1
+fi
+if [ -z "$reason" ]; then
+  echo "check-pr-gates: Renovate PR touching only Renovate-managed files — no review records required."
+  exit 0
 fi
 
 # gate name ; changed-file regex (ERE) that makes it required ; what it proves
