@@ -116,7 +116,7 @@ This document defines architecture, protocols, coding invariants, verification p
    - All chart-rendered Secrets use `stringData` so values are operator-inspectable in `helm get manifest`.
 3. **Container Security**:
    - Containers run non-root (`UID/GID 65532`), with `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, and `drop: [ALL]` capabilities.
-   - Runtime base is `gcr.io/distroless/static-debian12`, `CGO_ENABLED=0`, no shell, no extraneous files. Pin digest: `ghcr.io/0bu/tibber-pulse-bot:1.0.45@sha256:044fc28deafcf84a708ba81f508d344d3a25e60c8ad4af9da7a9314a5ce3795f`.
+   - Runtime base is `gcr.io/distroless/static-debian12`, `CGO_ENABLED=0`, no shell, no extraneous files. Pin digest: `ghcr.io/0bu/tibber-pulse-bot:1.0.46@sha256:312205d161d7c4007e42bc1068d4a4774e0aeab537f4707d095d61a05d13f7ae`.
 
 ---
 
