@@ -241,7 +241,7 @@ This repository uses an open, vendor-independent agent setup adhering to univers
 - `scripts/selftest-policy.sh`: Policy selftest proving that gates reliably fail when violated.
 - `scripts/stop-verify.sh`: Pre-turn completion verification hook running applicable Go checks, documentation drift and policy selftests.
 
-Run `scripts/install-hooks.sh` once per clone to activate the native Git hooks. The optional `.claude/settings.json` adapter calls these same scripts before shell pushes and merges, before connector PR merges/auto-merges, and at turn completion; shared safety logic stays in `scripts/`. Other agents must invoke the scripts through their own tool hooks or follow the verification protocol explicitly.
+Run `scripts/install-hooks.sh` once per clone to activate the native Git hooks. Shared safety logic stays in `scripts/`. Agents must invoke the scripts through their own tool hooks or follow the verification protocol explicitly.
 
 Git does not run `pre-merge-commit` for fast-forward or squash merges. Those paths require the agent pre-tool merge gate or the protected-branch PR policy. Native Git hooks cover merge commits and pushes; they do not intercept GitHub API calls.
 

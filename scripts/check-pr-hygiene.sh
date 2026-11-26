@@ -51,7 +51,7 @@ fi
 [ -r "$text_file" ] && [ -r "$diff_file" ] || { echo "check-pr-hygiene: input files are unreadable" >&2; exit 2; }
 
 # Git trailers are expected attribution, not prose.
-grep -viE '^(Co-Authored-By|Signed-off-by|Reviewed-by|Claude-Session):' "$text_file" > "$tmp/prose" || true
+grep -viE '^(Co-Authored-By|Signed-off-by|Reviewed-by):' "$text_file" > "$tmp/prose" || true
 cat "$tmp/prose" "$diff_file" > "$tmp/all"
 
 found=0

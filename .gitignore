@@ -25,9 +25,5 @@ chart/charts/
 chart/Chart.lock
 *.tgz
 
-# Claude Code — ignore local/session artifacts, track shared adapter
-.claude/*
-!.claude/settings.json
-
 # Agent markers
 .agents/.review-marker

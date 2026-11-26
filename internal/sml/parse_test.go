@@ -16,7 +16,7 @@ var stringReadings = map[string]bool{
 	"manufacturer": true,
 }
 
-// TestObisNamesHaveDiscoverySpecs guards the invariant from CLAUDE.md: every
+// TestObisNamesHaveDiscoverySpecs guards the invariant from AGENTS.md: every
 // numeric OBIS name the parser can emit must have HA discovery metadata, or
 // HA silently never surfaces it.
 func TestObisNamesHaveDiscoverySpecs(t *testing.T) {

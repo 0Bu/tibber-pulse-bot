@@ -56,7 +56,7 @@ fi
 n=0
 for doc in AGENTS.md; do
   [ -f "$doc" ] || continue
-  for p in $(grep -oE '(cmd|internal|chart|scripts|\.agents|\.claude|\.github)/[A-Za-z0-9._/-]*[A-Za-z0-9_]' "$doc" | sort -u); do
+  for p in $(grep -oE '(cmd|internal|chart|scripts|\.agents|\.github)/[A-Za-z0-9._/-]*[A-Za-z0-9_]' "$doc" | sort -u); do
     case "$p" in chart/charts*|dist*) continue ;; esac
     [ -e "$p" ] || { drift "$doc references missing path $p"; n=1; }
   done

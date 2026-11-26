@@ -57,7 +57,7 @@ fi
 # falls back to the normal gates. Deliberately forging both identities needs
 # push access; that residual risk is accepted for a single-maintainer repo.
 RENOVATE_EMAIL="bot@renovateapp.com"
-RENOVATE_FILES='^(Dockerfile|go\.mod|go\.sum|docker-compose\.yml|README\.md|AGENTS\.md|CLAUDE\.md|chart/Chart\.yaml|chart/values\.yaml|\.github/workflows/[A-Za-z0-9._-]+\.ya?ml)$'
+RENOVATE_FILES='^(Dockerfile|go\.mod|go\.sum|docker-compose\.yml|README\.md|AGENTS\.md|chart/Chart\.yaml|chart/values\.yaml|\.github/workflows/[A-Za-z0-9._-]+\.ya?ml)$'
 # Every parse or read error must end in a reason: an empty reason means exempt.
 renovate_reason() {  # prints why the PR is NOT a Renovate version update; empty if it is
   local same_repo ref emails authors
